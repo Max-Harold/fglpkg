@@ -21,6 +21,7 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/env"
 	"github.com/4js-mikefolcher/fglpkg/internal/genero"
 	gh "github.com/4js-mikefolcher/fglpkg/internal/github"
+	"github.com/4js-mikefolcher/fglpkg/internal/hooks"
 	"github.com/4js-mikefolcher/fglpkg/internal/installer"
 	"github.com/4js-mikefolcher/fglpkg/internal/lockfile"
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
@@ -165,7 +166,13 @@ func cmdInstall(args []string) error {
 		if flags.production {
 			fmt.Println("Installing in production mode (devDependencies will be skipped)")
 		}
-		return inst.InstallAllWithOptions(m, projectDir, flags.force, instOpts)
+		if err := runHook(m, manifest.HookPreInstall, projectDir); err != nil {
+			return err
+		}
+		if err := inst.InstallAllWithOptions(m, projectDir, flags.force, instOpts); err != nil {
+			return err
+		}
+		return runHook(m, manifest.HookPostInstall, projectDir)
 	}
 
 	m, err := manifest.LoadOrNew(".")
@@ -196,7 +203,24 @@ func cmdInstall(args []string) error {
 		return err
 	}
 	fmt.Println()
-	return inst.InstallAllWithOptions(m, projectDir, true, instOpts)
+	if err := runHook(m, manifest.HookPreInstall, projectDir); err != nil {
+		return err
+	}
+	if err := inst.InstallAllWithOptions(m, projectDir, true, instOpts); err != nil {
+		return err
+	}
+	return runHook(m, manifest.HookPostInstall, projectDir)
+}
+
+// runHook executes any operations declared for event in the project's
+// manifest, prefixed with a one-line user-facing log when the hook has
+// at least one operation. A failure aborts the surrounding command.
+func runHook(m *manifest.Manifest, event manifest.HookEvent, cwd string) error {
+	if len(m.Hooks[event]) == 0 {
+		return nil
+	}
+	fmt.Printf("Running %s hook (%d op(s))...\n", event, len(m.Hooks[event]))
+	return hooks.Run(m.Hooks, event, cwd)
 }
 
 // scopeDisplayName returns a short user-facing label for a manifest.Scope.
@@ -351,6 +375,10 @@ func cmdRemove(args []string) error {
 	m, err := manifest.Load(".")
 	if err != nil {
 		return fmt.Errorf("failed to load %s: %w", manifest.Filename, err)
+	}
+	projectDir, _ := os.Getwd()
+	if err := runHook(m, manifest.HookPreUninstall, projectDir); err != nil {
+		return err
 	}
 	inst := newInstaller(home)
 	for _, pkg := range pkgArgs {
@@ -520,6 +548,10 @@ func cmdPublish(args []string) error {
 		fmt.Printf("DRY RUN — no network calls will be made\n\n")
 	}
 	fmt.Printf("Publishing %s@%s (Genero %s variant) to %s...\n", m.Name, m.Version, generoMajor, registryURL)
+	projectDir, _ := os.Getwd()
+	if err := runHook(m, manifest.HookPrePublish, projectDir); err != nil {
+		return err
+	}
 	if err := publishPackage(m, token, registryURL, githubToken, owner, repo, generoMajor, dryRun); err != nil {
 		return fmt.Errorf("publish failed: %w", err)
 	}
@@ -528,7 +560,7 @@ func cmdPublish(args []string) error {
 	} else {
 		fmt.Printf("✓ Published %s@%s\n", m.Name, m.Version)
 	}
-	return nil
+	return runHook(m, manifest.HookPostPublish, projectDir)
 }
 
 func publishPackage(m *manifest.Manifest, token, registryURL, githubToken, owner, repo, generoMajor string, dryRun bool) error {
@@ -632,20 +664,29 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 		patterns = []string{"*.42m", "*.42f", "*.sch"}
 	}
 
+	// Load .fglpkgignore from the project root (current directory). The
+	// manifest field is never excluded; everything else can be filtered.
+	ignore, err := loadIgnore(".")
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot read %s: %w", ignoreFilename, err)
+	}
+
 	// Walk the root directory tree and collect files matching the patterns.
 	added := make(map[string]bool)
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
+			if isPackArtifactDir(path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		base := filepath.Base(path)
 		for _, pattern := range patterns {
 			matched, _ := filepath.Match(pattern, base)
 			if matched && !added[path] {
-				added[path] = true
 				// Keep the path relative to the project directory (not
 				// root) so the full directory structure is preserved in
 				// the zip.  When extracted into ~/.fglpkg/packages/<name>/,
@@ -654,6 +695,10 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 				if relErr != nil {
 					relPath = path
 				}
+				if ignore.shouldExclude(relPath, false) {
+					continue
+				}
+				added[path] = true
 				if err := addFileToZip(zw, path, relPath); err != nil {
 					return fmt.Errorf("cannot add %s to zip: %w", path, err)
 				}
@@ -666,6 +711,8 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 	}
 
 	// Include bin script files so they are present in the installed package.
+	// Bin scripts named in the manifest take precedence over .fglpkgignore —
+	// dropping a declared `bin` script would silently break the package.
 	for _, scriptPath := range m.BinFiles() {
 		fullPath := filepath.Join(root, scriptPath)
 		if added[fullPath] {
@@ -691,8 +738,14 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 	// Include doc files matching the docs glob patterns.
 	if len(m.Docs) > 0 {
 		err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+			if err != nil {
 				return err
+			}
+			if info.IsDir() {
+				if isPackArtifactDir(path) {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			if added[path] {
 				return nil
@@ -703,6 +756,9 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 			}
 			for _, pattern := range m.Docs {
 				if matchGlob(pattern, relPath) {
+					if ignore.shouldExclude(relPath, false) {
+						break
+					}
 					if err := addFileToZip(zw, path, relPath); err != nil {
 						return fmt.Errorf("cannot add doc file %s to zip: %w", path, err)
 					}
@@ -717,10 +773,22 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 		}
 	}
 
-	// Always include the manifest from the current directory.
+	// Always include the manifest, but use a publish-safe copy so the
+	// shipped fglpkg.json does not advertise devDependencies — those are
+	// developer-only and never resolved transitively, so they are noise to
+	// consumers (and let dev-only files leak into the package, see
+	// isPackArtifactDir).
 	if !added[manifest.Filename] {
-		if err := addFileToZip(zw, manifest.Filename, manifest.Filename); err != nil {
+		mfData, err := json.MarshalIndent(m.PublishCopy(), "", "  ")
+		if err != nil {
+			return nil, "", fmt.Errorf("cannot serialize publishable %s: %w", manifest.Filename, err)
+		}
+		fw, err := zw.Create(manifest.Filename)
+		if err != nil {
 			return nil, "", fmt.Errorf("cannot add %s to zip: %w", manifest.Filename, err)
+		}
+		if _, err := fw.Write(append(mfData, '\n')); err != nil {
+			return nil, "", fmt.Errorf("cannot write %s to zip: %w", manifest.Filename, err)
 		}
 	}
 
@@ -728,6 +796,14 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 		return nil, "", err
 	}
 	return buf.Bytes(), hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// isPackArtifactDir reports whether a directory should never appear in
+// the published zip. The local package cache (.fglpkg/) is the canonical
+// case: it holds installed devDependencies, and shipping them turns
+// every package into a transitive grab-bag of its developer's tooling.
+func isPackArtifactDir(path string) bool {
+	return filepath.Base(path) == ".fglpkg"
 }
 
 // addFileToZip adds a file at diskPath into the zip using zipPath as
@@ -1978,16 +2054,19 @@ func filepathBase() string {
 // matchGlob matches a path against a glob pattern, with support for "**"
 // to match any number of directory levels.  For simple patterns (no "**")
 // it also tries matching just the file's basename.
+// matchGlob tests whether path matches pattern. Patterns are anchored to
+// the project root: "USERGUIDE.md" matches only the root-level file, not
+// any nested USERGUIDE.md. Use "**/USERGUIDE.md" to match at any depth.
+// (Earlier versions silently fell back to matching pattern against the
+// basename, which let a devDependency's USERGUIDE.md sneak into a parent
+// project's published zip — see buildPackageZip.)
 func matchGlob(pattern, path string) bool {
 	// Normalise separators.
 	pattern = filepath.ToSlash(pattern)
 	path = filepath.ToSlash(path)
 
 	if !strings.Contains(pattern, "**") {
-		if matched, _ := filepath.Match(pattern, path); matched {
-			return true
-		}
-		matched, _ := filepath.Match(pattern, filepath.Base(path))
+		matched, _ := filepath.Match(pattern, path)
 		return matched
 	}
 

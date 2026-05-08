@@ -401,6 +401,189 @@ func TestOmitEmptyScopedDependencies(t *testing.T) {
 	}
 }
 
+// ─── Hooks ───────────────────────────────────────────────────────────────────
+
+func TestLoadAcceptsValidHooks(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+		"name": "x",
+		"version": "1.0.0",
+		"hooks": {
+			"postinstall": [
+				{ "op": "mkdir", "path": "var/cache" },
+				{ "op": "copy-files", "from": "templates/*.tpl", "to": "share/templates" }
+			]
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m, err := manifest.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ops := m.Hooks[manifest.HookPostInstall]
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d", len(ops))
+	}
+	if ops[0].Op != manifest.HookOpMkdir || ops[0].Path != "var/cache" {
+		t.Errorf("unexpected op[0]: %+v", ops[0])
+	}
+	if ops[1].Op != manifest.HookOpCopyFiles || ops[1].From != "templates/*.tpl" {
+		t.Errorf("unexpected op[1]: %+v", ops[1])
+	}
+}
+
+func TestLoadRejectsScriptsFieldWithMigrationHint(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"name":"x","version":"1.0.0","scripts":{"postinstall":"echo hi"}}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := manifest.Load(dir)
+	if err == nil {
+		t.Fatal("expected error for legacy scripts field")
+	}
+	if !contains(err.Error(), "hooks") {
+		t.Errorf("error should point to hooks, got: %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownHookEvent(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"name":"x","version":"1.0.0","hooks":{"postintsall":[{"op":"mkdir","path":"x"}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := manifest.Load(dir)
+	if err == nil {
+		t.Fatal("expected error for unknown event name")
+	}
+	if !contains(err.Error(), "postintsall") {
+		t.Errorf("error should mention the bad event name, got: %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownHookOp(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"name":"x","version":"1.0.0","hooks":{"postinstall":[{"op":"shell","from":"rm","to":"-rf"}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := manifest.Load(dir)
+	if err == nil {
+		t.Fatal("expected error for unknown op")
+	}
+	if !contains(err.Error(), "shell") {
+		t.Errorf("error should mention the bad op name, got: %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownHookOpField(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"name":"x","version":"1.0.0","hooks":{"postinstall":[{"op":"mkdir","path":"x","mode":"0755"}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := manifest.Load(dir)
+	if err == nil {
+		t.Fatal("expected error for unknown op field")
+	}
+	if !contains(err.Error(), "mode") {
+		t.Errorf("error should mention the bad field, got: %v", err)
+	}
+}
+
+func TestValidateRejectsAbsoluteHookPath(t *testing.T) {
+	m := &manifest.Manifest{
+		Name:    "x",
+		Version: "1.0.0",
+		Hooks: manifest.Hooks{
+			manifest.HookPostInstall: {{Op: manifest.HookOpMkdir, Path: "/etc/passwd"}},
+		},
+	}
+	err := m.Validate()
+	if err == nil {
+		t.Fatal("expected error for absolute path")
+	}
+	if !contains(err.Error(), "relative") {
+		t.Errorf("error should mention relative, got: %v", err)
+	}
+}
+
+func TestValidateRejectsParentTraversal(t *testing.T) {
+	m := &manifest.Manifest{
+		Name:    "x",
+		Version: "1.0.0",
+		Hooks: manifest.Hooks{
+			manifest.HookPostInstall: {{Op: manifest.HookOpCopyFiles, From: "../outside", To: "here"}},
+		},
+	}
+	if err := m.Validate(); err == nil {
+		t.Fatal("expected error for .. traversal in from")
+	}
+}
+
+func TestValidateRejectsCopyFilesMissingFields(t *testing.T) {
+	m := &manifest.Manifest{
+		Name:    "x",
+		Version: "1.0.0",
+		Hooks: manifest.Hooks{
+			manifest.HookPostInstall: {{Op: manifest.HookOpCopyFiles, From: "x"}},
+		},
+	}
+	if err := m.Validate(); err == nil {
+		t.Fatal("expected error for copy-files missing to")
+	}
+}
+
+func TestValidateRejectsMkdirMisuse(t *testing.T) {
+	// "mkdir" op with from/to set instead of path is rejected.
+	m := &manifest.Manifest{
+		Name:    "x",
+		Version: "1.0.0",
+		Hooks: manifest.Hooks{
+			manifest.HookPostInstall: {{Op: manifest.HookOpMkdir, From: "a", To: "b"}},
+		},
+	}
+	if err := m.Validate(); err == nil {
+		t.Fatal("expected error for mkdir with from/to")
+	}
+}
+
+// TestPublishCopyDropsDevDependencies confirms PublishCopy returns a
+// manifest whose serialized form has no devDependencies key, regardless
+// of whether the source declared dev deps. The original manifest must
+// not be mutated — callers may go on to use it for local resolution.
+func TestPublishCopyDropsDevDependencies(t *testing.T) {
+	m := manifest.New("pubtest", "1.0.0", "desc", "author")
+	m.AddFGLDependencyScoped("fglunit", "^0.1.0", manifest.ScopeDev)
+	m.AddFGLDependency("poiapi", "^1.0.0")
+
+	clone := m.PublishCopy()
+
+	// Receiver still has the dev dep.
+	if v, ok := m.DevDependencies.FGL["fglunit"]; !ok || v != "^0.1.0" {
+		t.Errorf("PublishCopy mutated receiver; DevDependencies.FGL = %v", m.DevDependencies.FGL)
+	}
+	// Copy has it cleared.
+	if len(clone.DevDependencies.FGL) != 0 || len(clone.DevDependencies.Java) != 0 {
+		t.Errorf("clone still has dev deps: %+v", clone.DevDependencies)
+	}
+	// Production deps survive.
+	if v, ok := clone.Dependencies.FGL["poiapi"]; !ok || v != "^1.0.0" {
+		t.Errorf("clone lost production deps: %v", clone.Dependencies.FGL)
+	}
+
+	data, err := json.Marshal(clone)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if contains(string(data), "devDependencies") {
+		t.Errorf("publishable JSON should not mention devDependencies; got: %s", data)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }

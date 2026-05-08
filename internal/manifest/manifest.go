@@ -44,7 +44,70 @@ type Manifest struct {
 	Bin                  map[string]string `json:"bin,omitempty"`      // command name -> script path
 	Docs                 []string          `json:"docs,omitempty"`     // glob patterns for doc files
 	Programs             []string          `json:"programs,omitempty"` // modules with MAIN blocks (e.g. "PoiConvert")
-	Scripts              map[string]string `json:"scripts,omitempty"`
+	// Hooks declare lifecycle steps to run on well-known events. Each value
+	// is an ordered list of declarative operations from a fixed vocabulary
+	// (see HookOp). Arbitrary shell commands are intentionally not supported.
+	Hooks Hooks `json:"hooks,omitempty"`
+}
+
+// Hooks maps a lifecycle event name to the ordered list of operations to
+// run for that event. Events:
+//   - preinstall    runs before a package's files are extracted
+//   - postinstall   runs after a package's files are extracted and bin
+//                   scripts are made executable
+//   - prepublish    runs before the publishable zip is built
+//   - postpublish   runs after the registry has accepted the upload
+//   - preuninstall  runs before a package's directory is removed
+type Hooks map[HookEvent][]HookOperation
+
+// HookEvent is a lifecycle event name. Unknown events are rejected at
+// manifest-load time.
+type HookEvent string
+
+const (
+	HookPreInstall   HookEvent = "preinstall"
+	HookPostInstall  HookEvent = "postinstall"
+	HookPrePublish   HookEvent = "prepublish"
+	HookPostPublish  HookEvent = "postpublish"
+	HookPreUninstall HookEvent = "preuninstall"
+)
+
+// validHookEvents is the closed set of accepted event names.
+var validHookEvents = map[HookEvent]bool{
+	HookPreInstall:   true,
+	HookPostInstall:  true,
+	HookPrePublish:   true,
+	HookPostPublish:  true,
+	HookPreUninstall: true,
+}
+
+// HookOp is the operation discriminator for HookOperation.
+type HookOp string
+
+const (
+	HookOpCopyFiles HookOp = "copy-files"
+	HookOpMkdir     HookOp = "mkdir"
+)
+
+// validHookOps is the closed set of accepted operation names.
+var validHookOps = map[HookOp]bool{
+	HookOpCopyFiles: true,
+	HookOpMkdir:     true,
+}
+
+// HookOperation is one declarative step within a hook. The set of
+// meaningful fields depends on Op; unused fields are simply omitted.
+type HookOperation struct {
+	Op HookOp `json:"op"`
+	// From is the source path (or glob) for copy-files. Relative to the
+	// hook's working directory; absolute paths and ".." traversal are
+	// rejected.
+	From string `json:"from,omitempty"`
+	// To is the destination path for copy-files and mkdir. Same path
+	// constraints as From.
+	To string `json:"to,omitempty"`
+	// Path is the target path for mkdir.
+	Path string `json:"path,omitempty"`
 }
 
 // Dependencies holds both FGL and Java dependency declarations.
@@ -79,6 +142,57 @@ func (d *Dependencies) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf(`invalid "dependencies.java": %w`, err)
 		}
 	}
+	return nil
+}
+
+// UnmarshalJSON rejects unknown lifecycle event names with a helpful
+// error so typos like "postintsall" surface at load time rather than
+// being silently ignored.
+func (h *Hooks) UnmarshalJSON(data []byte) error {
+	var raw map[string][]HookOperation
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	out := make(Hooks, len(raw))
+	for k, ops := range raw {
+		ev := HookEvent(k)
+		if !validHookEvents[ev] {
+			return fmt.Errorf(
+				`unknown hook event %q: expected one of preinstall, postinstall, prepublish, postpublish, preuninstall`,
+				k,
+			)
+		}
+		out[ev] = ops
+	}
+	*h = out
+	return nil
+}
+
+// UnmarshalJSON rejects unknown operation names and unknown fields on a
+// HookOperation. Each op has its own required-field check in Validate().
+func (op *HookOperation) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	allowed := map[string]bool{"op": true, "from": true, "to": true, "path": true}
+	for k := range raw {
+		if !allowed[k] {
+			return fmt.Errorf(`unknown field %q in hook operation`, k)
+		}
+	}
+	type alias HookOperation
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	if !validHookOps[a.Op] {
+		return fmt.Errorf(
+			`unknown hook op %q: expected one of copy-files, mkdir`,
+			string(a.Op),
+		)
+	}
+	*op = HookOperation(a)
 	return nil
 }
 
@@ -202,6 +316,12 @@ func Load(dir string) (*Manifest, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&m); err != nil {
+		if strings.Contains(err.Error(), `"scripts"`) {
+			return nil, fmt.Errorf(
+				`invalid %s: the "scripts" field has been replaced by "hooks" with declarative operations — see docs/user-guide.md`,
+				Filename,
+			)
+		}
 		return nil, fmt.Errorf("invalid %s: %w", Filename, err)
 	}
 	if m.Dependencies.FGL == nil {
@@ -284,6 +404,17 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 	}
 	out.WriteByte('}')
 	return out.Bytes(), nil
+}
+
+// PublishCopy returns a copy of the manifest stripped of fields that are
+// only meaningful while developing the package. Dev dependencies are not
+// pulled in transitively (see resolver), so leaving them in the published
+// fglpkg.json just exposes private tooling choices to consumers. The
+// receiver is left untouched.
+func (m *Manifest) PublishCopy() *Manifest {
+	clone := *m
+	clone.DevDependencies = Dependencies{}
+	return &clone
 }
 
 // isEmptyDependenciesJSON returns true when the JSON-encoded Dependencies
@@ -439,6 +570,66 @@ func (m *Manifest) Validate() error {
 		if _, err := filepath.Match(cleaned, "test"); err != nil {
 			return fmt.Errorf("invalid docs glob pattern %q: %w", pattern, err)
 		}
+	}
+	for event, ops := range m.Hooks {
+		for i, op := range ops {
+			if err := validateHookOp(op); err != nil {
+				return fmt.Errorf("hooks.%s[%d]: %w", event, i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateHookOp enforces per-operation required fields and the shared
+// path-safety rules: no absolute paths, no ".." traversal.
+func validateHookOp(op HookOperation) error {
+	switch op.Op {
+	case HookOpCopyFiles:
+		if op.From == "" {
+			return fmt.Errorf(`copy-files: "from" is required`)
+		}
+		if op.To == "" {
+			return fmt.Errorf(`copy-files: "to" is required`)
+		}
+		if op.Path != "" {
+			return fmt.Errorf(`copy-files: "path" is not valid (use "from"/"to")`)
+		}
+		if err := safeRelPath("from", op.From); err != nil {
+			return err
+		}
+		if err := safeRelPath("to", op.To); err != nil {
+			return err
+		}
+	case HookOpMkdir:
+		if op.Path == "" {
+			return fmt.Errorf(`mkdir: "path" is required`)
+		}
+		if op.From != "" || op.To != "" {
+			return fmt.Errorf(`mkdir: only "path" is valid (got "from"/"to")`)
+		}
+		if err := safeRelPath("path", op.Path); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown op %q", op.Op)
+	}
+	return nil
+}
+
+// safeRelPath rejects absolute paths and any path that escapes its base
+// via ".." segments. Forward slashes are normalised so manifests work the
+// same on Windows and Unix.
+func safeRelPath(field, p string) error {
+	if p == "" {
+		return fmt.Errorf("%s must not be empty", field)
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%s %q must be relative, not absolute", field, p)
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(p))
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return fmt.Errorf("%s %q must not escape the package root with ..", field, p)
 	}
 	return nil
 }

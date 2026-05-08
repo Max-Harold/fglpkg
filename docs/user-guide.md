@@ -12,6 +12,7 @@ This guide covers the day-to-day usage of fglpkg, the package manager for Genero
 - [Publishing a Package](#publishing-a-package)
 - [Working with Java JARs](#working-with-java-jars)
 - [Distributable Scripts](#distributable-scripts)
+- [Lifecycle Hooks](#lifecycle-hooks)
 - [Package Documentation](#package-documentation)
 - [Registry Authentication](#registry-authentication)
 - [Workspaces (Monorepos)](#workspaces-monorepos)
@@ -350,6 +351,24 @@ By default, fglpkg collects files matching `*.42m`, `*.42f`, and `*.sch`. To cus
 }
 ```
 
+### Excluding Files with `.fglpkgignore`
+
+Place a `.fglpkgignore` file in the project root to subtract files from the inclusion set computed by `files`/`docs`. The syntax is a small subset of `.gitignore`:
+
+```
+# comments start with #
+*.bak           # exclude any .bak file at any depth
+build/          # trailing slash → directory-only
+/scratch        # leading slash → anchored to project root
+docs/internal.md
+!docs/internal-public.md   # ! re-includes a previously excluded path
+```
+
+Notes:
+- Patterns are evaluated in file order; the last matching rule wins.
+- Files declared in the manifest's `bin` field are always included, even if they match an ignore pattern — dropping a declared script would silently break the package.
+- `fglpkg.json` is always included.
+
 ### GitHub Setup (Required for Publishing and Installing)
 
 Package zips are stored as GitHub Release assets on a private repository. The fglpkg registry server stores only metadata.
@@ -603,6 +622,64 @@ echo "Running migration..."
 import sys
 print("Seeding database...")
 ```
+
+## Lifecycle Hooks
+
+The optional `hooks` field declares steps to run on well-known events. The vocabulary is intentionally a closed set of declarative operations — arbitrary shell commands are not supported, since shell-based hooks are the dominant supply-chain attack vector in mainstream package managers.
+
+```json
+{
+  "name": "poiapi",
+  "version": "1.0.0",
+  "hooks": {
+    "postinstall": [
+      { "op": "mkdir", "path": "var/cache" },
+      { "op": "copy-files", "from": "templates/*.tpl", "to": "share/templates" }
+    ],
+    "prepublish": [
+      { "op": "copy-files", "from": "vendor", "to": "dist/vendor" }
+    ]
+  }
+}
+```
+
+### Events
+
+Hooks run on the project (consumer) manifest, not on dependency manifests:
+
+| Event          | When it fires                                            | Working directory |
+|----------------|----------------------------------------------------------|-------------------|
+| `preinstall`   | Before `fglpkg install` starts resolving packages        | project root      |
+| `postinstall`  | After every dependency has been installed                | project root      |
+| `prepublish`   | Before `fglpkg publish` builds the zip                   | project root      |
+| `postpublish`  | After `fglpkg publish` finishes the registry update      | project root      |
+| `preuninstall` | Before `fglpkg remove` deletes a package                 | project root      |
+
+A failure in any operation aborts the surrounding command; later operations in the same hook are skipped.
+
+### Operations
+
+Two operations are supported in this release. More can be added without breaking the schema (`fetch-jar` and `compile-bdl` are planned for a later phase).
+
+**`copy-files`** — copy a file, a directory tree, or every match of a glob.
+
+```json
+{ "op": "copy-files", "from": "templates/*.tpl", "to": "share/templates" }
+```
+
+- `from` is a relative path or a glob (`*`, `?`, `[…]`).
+- `to` is a relative directory (created if missing) or a single-file destination.
+- Absolute paths and `..` traversal are rejected at manifest load time.
+
+**`mkdir`** — create a directory and its parents. No-op if the directory already exists; fails if the path exists as a file.
+
+```json
+{ "op": "mkdir", "path": "var/cache" }
+```
+
+### Migrating from `scripts`
+
+The previous `scripts` field was defined but never executed. It has been removed. A manifest that still uses `scripts` fails to load with a hint pointing at `hooks` — convert each entry to one of the operations above.
 
 ## Package Documentation
 

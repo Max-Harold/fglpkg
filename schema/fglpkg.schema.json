@@ -74,10 +74,17 @@
       "items": { "type": "string" },
       "uniqueItems": true
     },
-    "scripts": {
+    "hooks": {
       "type": "object",
-      "description": "Reserved for declarative lifecycle steps (preinstall, postinstall, prepublish, postpublish, preuninstall). Currently defined but not executed; behaviour is still being designed.",
-      "additionalProperties": { "type": "string" }
+      "description": "Declarative lifecycle steps. Each event (preinstall/postinstall/prepublish/postpublish/preuninstall) maps to an ordered list of operations from a fixed vocabulary; arbitrary shell commands are not supported.",
+      "additionalProperties": false,
+      "properties": {
+        "preinstall":   { "$ref": "#/definitions/hookList" },
+        "postinstall":  { "$ref": "#/definitions/hookList" },
+        "prepublish":   { "$ref": "#/definitions/hookList" },
+        "postpublish":  { "$ref": "#/definitions/hookList" },
+        "preuninstall": { "$ref": "#/definitions/hookList" }
+      }
     },
     "dependencies": {
       "$ref": "#/definitions/dependencyBucket",
@@ -111,6 +118,44 @@
           "items": { "$ref": "#/definitions/javaDependency" }
         }
       }
+    },
+    "hookList": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/hookOperation" }
+    },
+    "hookOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": ["copy-files", "mkdir"],
+          "description": "Operation to perform. The vocabulary is closed; unknown ops are rejected at load time."
+        },
+        "from": {
+          "type": "string",
+          "description": "Source path or glob for copy-files. Relative to the hook's working directory; absolute paths and \"..\" traversal are rejected."
+        },
+        "to": {
+          "type": "string",
+          "description": "Destination path for copy-files. Same path constraints as \"from\"."
+        },
+        "path": {
+          "type": "string",
+          "description": "Target path for mkdir. Same path constraints as \"from\"/\"to\"."
+        }
+      },
+      "allOf": [
+        {
+          "if":   { "properties": { "op": { "const": "copy-files" } } },
+          "then": { "required": ["from", "to"] }
+        },
+        {
+          "if":   { "properties": { "op": { "const": "mkdir" } } },
+          "then": { "required": ["path"] }
+        }
+      ]
     },
     "javaDependency": {
       "type": "object",

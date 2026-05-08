@@ -3,18 +3,21 @@ package cli
 import "testing"
 
 func TestMatchGlobSimplePattern(t *testing.T) {
+	// Patterns without "**" are anchored to the project root: they match
+	// the path directly, with no basename fallback. Use "**/foo" to match
+	// at any depth.
 	tests := []struct {
 		pattern string
 		path    string
 		want    bool
 	}{
 		{"*.md", "README.md", true},
-		{"*.md", "docs/guide.md", true},     // basename fallback
+		{"*.md", "docs/guide.md", false},
 		{"*.md", "README.txt", false},
 		{"README.md", "README.md", true},
-		{"README.md", "docs/README.md", true}, // basename fallback
+		{"README.md", "docs/README.md", false},
 		{"*.go", "main.go", true},
-		{"*.go", "cmd/main.go", true},
+		{"*.go", "cmd/main.go", false},
 		{"*.go", "main.rs", false},
 	}
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
@@ -85,6 +86,113 @@ func TestBuildPackageZipContents(t *testing.T) {
 	if got["notes.txt"] {
 		t.Errorf("notes.txt should not be in zip (no matching pattern)")
 	}
+}
+
+// TestBuildPackageZipExcludesLocalCacheAndStripsDevDeps reproduces the
+// ifx-to-pgs leak: a project that installs a devDependency locally
+// (.fglpkg/packages/<dep>/...) and declares a docs pattern whose name
+// happens to collide with a file inside that dep would ship the dep's
+// docs and advertise its own devDependencies block in the published
+// manifest. The fix is two-fold: walk past .fglpkg/, and strip
+// devDependencies from the manifest copy that goes into the zip.
+func TestBuildPackageZipExcludesLocalCacheAndStripsDevDeps(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write("fglpkg.json", `{
+  "name": "leaktest",
+  "version": "1.0.0",
+  "root": "src",
+  "files": ["*.42m"],
+  "docs": ["USERGUIDE.md"],
+  "dependencies": { "fgl": {} },
+  "devDependencies": { "fgl": { "fglunit": "^0.1.0" } }
+}`)
+	write("USERGUIDE.md", "# leaktest user guide\n")
+	write("src/Main.42m", "MAIN END MAIN\n")
+	// The local package cache holds an installed devDependency. Both its
+	// USERGUIDE.md and its compiled modules must stay out of the zip.
+	write(".fglpkg/packages/fglunit/USERGUIDE.md", "# fglunit docs (must not ship)\n")
+	write(".fglpkg/packages/fglunit/com/fourjs/fglunit/FglUnit.42m", "MAIN END MAIN\n")
+
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	m, err := manifest.Load(".")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	data, _, err := buildPackageZip(m)
+	if err != nil {
+		t.Fatalf("buildPackageZip: %v", err)
+	}
+
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	got := map[string]string{}
+	for _, f := range r.File {
+		body, err := readZipEntry(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f.Name, err)
+		}
+		got[f.Name] = body
+	}
+
+	for name := range got {
+		if filepath.HasPrefix(name, ".fglpkg/") || filepath.ToSlash(name) == ".fglpkg" {
+			t.Errorf("local cache entry leaked into zip: %s", name)
+		}
+	}
+	if _, ok := got["USERGUIDE.md"]; !ok {
+		t.Errorf("expected root USERGUIDE.md in zip; got %v", keys(boolKeys(got)))
+	}
+
+	mfRaw, ok := got["fglpkg.json"]
+	if !ok {
+		t.Fatal("manifest missing from zip")
+	}
+	if strings.Contains(mfRaw, "devDependencies") {
+		t.Errorf("publishable manifest should not advertise devDependencies; got:\n%s", mfRaw)
+	}
+	if !strings.Contains(mfRaw, `"name": "leaktest"`) {
+		t.Errorf("publishable manifest looks malformed:\n%s", mfRaw)
+	}
+}
+
+// readZipEntry reads a zip file entry to a string for assertion.
+func readZipEntry(f *zip.File) (string, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(rc); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// boolKeys converts a map[string]string into a map[string]bool so the
+// existing keys() helper can be reused for diagnostics.
+func boolKeys(m map[string]string) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
 }
 
 func TestListZipEntriesSortedAndSized(t *testing.T) {
