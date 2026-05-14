@@ -14,8 +14,8 @@ var completionCommands = []string{
 	"init", "install", "remove", "update", "list", "env", "search",
 	"publish", "pack", "unpublish", "login", "logout", "whoami",
 	"owner", "token", "config", "workspace", "ws", "run", "bdl",
-	"docs", "version", "info", "view", "outdated", "completion",
-	"help",
+	"docs", "version", "info", "view", "outdated", "audit",
+	"completion", "help",
 }
 
 // completionFlags lists the long + short flags used across commands.
@@ -32,6 +32,9 @@ var completionFlags = []string{
 	"--json",
 	"--list",
 	"--output", "-o",
+	"--production",
+	"--severity=",
+	"--offline",
 	"--help", "-h",
 }
 

@@ -68,6 +68,8 @@ func Execute() error {
 		return cmdInfo(args)
 	case "outdated":
 		return cmdOutdated(args)
+	case "audit":
+		return cmdAudit(args)
 	case "completion":
 		return cmdCompletion(args)
 	case "publish":
@@ -1923,6 +1925,8 @@ COMMANDS:
   search <term>     Search the registry
   info <pkg>[@ver]  Show registry metadata for a package (--json for raw output)
   outdated          Show FGL deps with newer versions available (--json for JSON)
+  audit             Check installed Java JARs for known vulnerabilities
+                    (--json, --severity=<level>, --production)
   completion <sh>   Print shell completion script (bash|zsh|fish|powershell)
   bdl <pkg> <mod>   Run a BDL program from an installed package
   publish [--dry-run] Publish current package to registry
