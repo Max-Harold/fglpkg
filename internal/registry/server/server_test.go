@@ -448,6 +448,59 @@ func TestPathTraversalRejected(t *testing.T) {
 	}
 }
 
+// ─── Readme field on package metadata ─────────────────────────────────────────
+
+// TestPublishWithReadmeRoundTrip publishes a package whose meta carries
+// a readme, then verifies GET /packages/:name/:version returns the
+// readme verbatim.
+func TestPublishWithReadmeRoundTrip(t *testing.T) {
+	ts := newTestServer(t)
+	readme := "# Demo\n\nA test package.\n"
+	publish(t, ts, "demo", "1.0.0", map[string]any{
+		"description": "test",
+		"readme":      readme,
+	}, testToken)
+
+	var got map[string]any
+	resp := getJSON(t, ts.URL+"/packages/demo/1.0.0", &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got["readme"] != readme {
+		t.Errorf("readme = %q, want %q", got["readme"], readme)
+	}
+}
+
+// TestPublishWithoutReadmeOmitsField verifies that publishes with no
+// readme produce a response that does not contain the field at all
+// (rather than including an empty string).
+func TestPublishWithoutReadmeOmitsField(t *testing.T) {
+	ts := newTestServer(t)
+	publish(t, ts, "demo", "1.0.0", map[string]any{
+		"description": "test",
+	}, testToken)
+
+	var got map[string]any
+	getJSON(t, ts.URL+"/packages/demo/1.0.0", &got)
+	if _, present := got["readme"]; present {
+		t.Errorf("readme key should be absent, got %v", got["readme"])
+	}
+}
+
+// TestPublishReadmeTooLarge verifies the server rejects publishes
+// whose readme exceeds the MaxReadmeBytes cap.
+func TestPublishReadmeTooLarge(t *testing.T) {
+	ts := newTestServer(t)
+	huge := strings.Repeat("a", server.MaxReadmeBytes+1)
+	resp := publish(t, ts, "demo", "1.0.0", map[string]any{
+		"description": "test",
+		"readme":      huge,
+	}, testToken)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 // ─── Helpers used by tests but not exported in production ─────────────────────
 
 // writeTestFile creates a temp file with content and returns its path.

@@ -460,7 +460,15 @@ type publishRequest struct {
 	Checksum         string            `json:"checksum"`
 	DownloadURL      string            `json:"downloadUrl,omitempty"`
 	GeneroMajor      string            `json:"generoMajor,omitempty"` // variant key, e.g. "4"
+	// Readme is the package's top-level README content. Optional;
+	// capped at MaxReadmeBytes on the server.
+	Readme string `json:"readme,omitempty"`
 }
+
+// MaxReadmeBytes is the largest readme payload the server accepts in
+// a publish request. The CLI truncates at half this value before
+// sending; the server's cap is the absolute backstop.
+const MaxReadmeBytes = 512 * 1024
 
 type javaDep struct {
 	GroupID    string `json:"groupId"`
@@ -543,6 +551,11 @@ func (h *handler) handlePublishJSON(w http.ResponseWriter, r *http.Request, name
 		writeError(w, http.StatusBadRequest, "checksum is required for JSON publishes")
 		return
 	}
+	if len(meta.Readme) > MaxReadmeBytes {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("readme exceeds maximum size (%d bytes)", MaxReadmeBytes))
+		return
+	}
 
 	// Variant publish: generoMajor is set (e.g., "4", "6").
 	if meta.GeneroMajor != "" {
@@ -615,6 +628,11 @@ func (h *handler) handlePublishMultipart(w http.ResponseWriter, r *http.Request,
 	var meta publishRequest
 	if err := json.Unmarshal([]byte(metaField), &meta); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid meta JSON: "+err.Error())
+		return
+	}
+	if len(meta.Readme) > MaxReadmeBytes {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("readme exceeds maximum size (%d bytes)", MaxReadmeBytes))
 		return
 	}
 

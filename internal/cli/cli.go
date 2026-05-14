@@ -623,6 +623,16 @@ func publishPackage(m *manifest.Manifest, token, registryURL, githubToken, owner
 	if len(m.Dependencies.Java) > 0 {
 		meta["javaDeps"] = m.Dependencies.Java
 	}
+	// Capture the top-level README so downstream consumers (MCP
+	// service, web UI) can display it without downloading the zip.
+	// Missing README is not an error.
+	readme, err := collectReadme(m.Root)
+	if err != nil {
+		return fmt.Errorf("cannot collect README: %w", err)
+	}
+	if readme != "" {
+		meta["readme"] = readme
+	}
 
 	url := fmt.Sprintf("%s/packages/%s/%s/publish",
 		strings.TrimRight(registryURL, "/"), m.Name, m.Version)

@@ -43,6 +43,10 @@ type versionRecord struct {
 	JavaDeps         []javaDep         `json:"javaDeps,omitempty"`
 	Variants         []variant         `json:"variants,omitempty"`
 	PublishedAt      string            `json:"publishedAt"`
+	// Readme is the package's top-level README content (markdown, rst,
+	// or plain text), captured at publish time. Optional; empty for
+	// packages that did not ship a README.
+	Readme string `json:"readme,omitempty"`
 }
 
 // variant represents a Genero-major-version-specific build of a package version.
@@ -209,6 +213,7 @@ func (s *fileStore) savePackage(
 		FGLDeps:          meta.FGLDeps,
 		JavaDeps:         meta.JavaDeps,
 		PublishedAt:      time.Now().UTC().Format(time.RFC3339),
+		Readme:           meta.Readme,
 	})
 
 	// Write meta.json atomically — roll back blob on failure.
@@ -259,6 +264,7 @@ func (s *fileStore) savePackageMetadata(name, version string, meta publishReques
 		FGLDeps:          meta.FGLDeps,
 		JavaDeps:         meta.JavaDeps,
 		PublishedAt:      time.Now().UTC().Format(time.RFC3339),
+		Readme:           meta.Readme,
 	})
 
 	if err := atomicWriteJSON(s.metaPath(name), &pm); err != nil {
@@ -308,6 +314,7 @@ func (s *fileStore) savePackageVariant(name, version string, meta publishRequest
 			FGLDeps:          meta.FGLDeps,
 			JavaDeps:         meta.JavaDeps,
 			PublishedAt:      time.Now().UTC().Format(time.RFC3339),
+			Readme:           meta.Readme,
 		}
 		pm.Versions = append(pm.Versions, vr)
 	}

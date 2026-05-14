@@ -38,6 +38,11 @@ type PackageInfo struct {
 	FGLDeps          map[string]string         `json:"fglDeps,omitempty"`
 	JavaDeps         []manifest.JavaDependency `json:"javaDeps,omitempty"`
 	Variants         []VariantInfo             `json:"variants,omitempty"`
+	// Readme is the package's top-level README content captured at
+	// publish time. Empty when the publisher had no README. Intended
+	// for downstream consumers like an MCP service or web UI; the CLI
+	// does not render it.
+	Readme string `json:"readme,omitempty"`
 }
 
 // VariantInfo describes a Genero-major-version-specific build of a package.
