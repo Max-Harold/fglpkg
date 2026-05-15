@@ -1,0 +1,1016 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>fglpkg — Executive Pitch</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --bg-soft: #0f1424;
+    --panel: #151b2e;
+    --panel-2: #1c2440;
+    --line: #232c4a;
+    --ink: #f5f7ff;
+    --ink-dim: #aeb6d4;
+    --ink-mute: #6a7494;
+    --accent: #4ec9f0;
+    --accent-2: #8de4ff;
+    --good: #5cd6a6;
+    --bad: #ff7878;
+    --blue: #7aa2ff;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #000;
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  .stage-wrap {
+    position: fixed; inset: 0;
+    display: grid; place-items: center;
+    background: #000;
+  }
+  .stage {
+    position: relative;
+    width: min(100vw, calc(100vh * 16 / 9));
+    height: min(100vh, calc(100vw * 9 / 16));
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .stage::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%),
+      linear-gradient(180deg, #0b1020 0%, #0a0e1a 60%, #07091a 100%);
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .progress {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 3px;
+    background: rgba(255,255,255,0.06);
+    z-index: 30;
+  }
+  .progress > span {
+    display: block; height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition: width 0.1s linear;
+  }
+
+  .brand {
+    position: absolute;
+    top: 4.2%; left: 4.4%;
+    display: flex; align-items: center; gap: 10px;
+    z-index: 25;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+    font-size: clamp(11px, 1.1vw, 14px);
+    letter-spacing: 0.14em;
+    color: var(--ink-dim);
+    text-transform: uppercase;
+  }
+  .brand.on { opacity: 1; }
+  .brand-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 14px rgba(78,201,240,0.55);
+  }
+
+  .scene {
+    position: absolute; inset: 0;
+    z-index: 5;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.55s ease;
+    display: grid;
+    place-items: center;
+    padding: 7% 8%;
+  }
+  .scene.on { opacity: 1; }
+
+  .caption {
+    position: absolute;
+    left: 8%; right: 8%; bottom: 7%;
+    z-index: 22;
+    font-size: clamp(16px, 1.9vw, 26px);
+    line-height: 1.35;
+    color: var(--ink);
+    font-weight: 500;
+    text-align: center;
+    text-shadow: 0 2px 18px rgba(0,0,0,0.7);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+  }
+  .caption.on { opacity: 1; transform: translateY(0); }
+  .caption .accent { color: var(--accent); }
+
+  /* ---------- Scene 1: Hook + PM intro ---------- */
+  .s1 { background: radial-gradient(1200px 700px at 50% 38%, #11183a 0%, transparent 60%); }
+  .s1-stack {
+    display: flex; flex-direction: column; align-items: center; gap: 1.6vh;
+    transform: translateY(-2vh);
+  }
+  .s1-eyebrow {
+    font-size: clamp(11px, 1.1vw, 14px);
+    letter-spacing: 0.22em;
+    color: var(--ink-mute);
+    text-transform: uppercase;
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .s1-eyebrow.on { opacity: 1; transform: translateY(0); }
+  .s1-headline {
+    font-size: clamp(36px, 7.4vw, 110px);
+    font-weight: 800;
+    letter-spacing: -0.035em;
+    line-height: 1;
+    background: linear-gradient(180deg, #c8f1ff 0%, var(--accent) 70%, #2787ad 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-align: center;
+    opacity: 0; transform: translateY(20px) scale(0.96);
+    transition: opacity 0.9s ease, transform 1.1s cubic-bezier(.2,.7,.2,1);
+  }
+  .s1-headline.on { opacity: 1; transform: translateY(0) scale(1); }
+  .s1-sub {
+    font-size: clamp(16px, 2vw, 26px);
+    color: var(--ink-dim);
+    font-weight: 400;
+    max-width: 78%;
+    text-align: center;
+    line-height: 1.4;
+    opacity: 0; transform: translateY(12px);
+    transition: opacity 0.7s ease, transform 0.7s ease;
+  }
+  .s1-sub.on { opacity: 1; transform: translateY(0); }
+  .s1-pmrow {
+    margin-top: 1vh;
+    display: flex; gap: 14px; flex-wrap: wrap; justify-content: center;
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.7s ease, transform 0.7s ease;
+  }
+  .s1-pmrow.on { opacity: 1; transform: translateY(0); }
+  .pm-chip {
+    padding: 6px 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: clamp(11px, 1.1vw, 14px);
+    color: var(--ink-dim);
+  }
+  .pm-chip strong { color: var(--ink); font-weight: 600; }
+  .pm-chip.missing {
+    background: rgba(255,120,120,0.10);
+    border-color: rgba(255,120,120,0.40);
+    color: #ffbcbc;
+  }
+
+  /* ---------- Scene 2: Problem (terminal) ---------- */
+  .s2 { background: radial-gradient(900px 600px at 50% 50%, #161c36 0%, transparent 65%); }
+  .terminal {
+    width: 80%;
+    max-width: 1120px;
+    background: #0d1226;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.55);
+    overflow: hidden;
+    font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  .terminal-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: #0a0f22;
+    border-bottom: 1px solid var(--line);
+  }
+  .terminal-dots { display: flex; gap: 6px; }
+  .terminal-dots span { width: 11px; height: 11px; border-radius: 50%; background: #3a425e; }
+  .terminal-dots span:nth-child(1) { background: #ff6058; }
+  .terminal-dots span:nth-child(2) { background: #ffbd2e; }
+  .terminal-dots span:nth-child(3) { background: #27c93f; }
+  .terminal-title {
+    margin-left: 14px;
+    font-size: clamp(11px, 1vw, 13px);
+    color: var(--ink-mute);
+    letter-spacing: 0.04em;
+  }
+  .terminal-body {
+    padding: 24px 28px;
+    min-height: clamp(220px, 36vh, 420px);
+    font-size: clamp(13px, 1.4vw, 18px);
+    line-height: 1.65;
+    color: var(--ink);
+  }
+  .term-line {
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    white-space: pre-wrap;
+  }
+  .term-line.on { opacity: 1; transform: translateY(0); }
+  .prompt { color: var(--accent); margin-right: 8px; }
+  .comment { color: var(--ink-mute); font-style: italic; }
+  .keyword { color: var(--accent-2); }
+  .danger { color: var(--bad); }
+
+  /* ---------- Scene 3: Insight ---------- */
+  .s3 { background: radial-gradient(900px 600px at 50% 45%, #131c38 0%, transparent 65%); }
+  .insight-wrap {
+    display: flex; flex-direction: column; align-items: center; gap: 4vh;
+    width: 86%;
+  }
+  .insight-terminal {
+    width: 100%;
+    max-width: 1100px;
+    background: #0d1226;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .insight-terminal .terminal-body { min-height: clamp(180px, 28vh, 320px); }
+  .stack-row {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 16px;
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .stack-row.on { opacity: 1; transform: translateY(0); }
+  .stack-chip {
+    padding: 8px 14px;
+    background: rgba(78,201,240,0.08);
+    border: 1px solid rgba(78,201,240,0.35);
+    border-radius: 999px;
+    font-size: clamp(11px, 1.15vw, 15px);
+    color: var(--accent-2);
+    letter-spacing: 0.06em;
+  }
+  .ok { color: var(--good); }
+
+  /* ---------- Scene 4: MCP / Agentic AI ---------- */
+  .s4 { background: radial-gradient(900px 600px at 30% 50%, #131a36 0%, transparent 65%); }
+  .chat {
+    width: 80%; max-width: 1100px;
+    display: grid; grid-template-columns: 1fr; gap: 14px;
+  }
+  .bubble {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px 20px;
+    font-size: clamp(14px, 1.5vw, 20px);
+    line-height: 1.5;
+    color: var(--ink);
+    max-width: 82%;
+    opacity: 0; transform: translateY(10px);
+    transition: opacity 0.4s ease, transform 0.4s ease;
+  }
+  .bubble.user {
+    justify-self: end;
+    background: linear-gradient(180deg, #1a274d, #15203e);
+    border-color: #2a3a6a;
+  }
+  .bubble.agent {
+    justify-self: start;
+    background: var(--panel);
+    border-color: var(--line);
+    max-width: 92%;
+  }
+  .bubble.on { opacity: 1; transform: translateY(0); }
+  .bubble .label {
+    font-size: clamp(10px, 0.95vw, 12px);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin-bottom: 8px;
+  }
+  .bubble.agent .label .acc { color: var(--accent); }
+  .tool-line {
+    font-size: clamp(13px, 1.35vw, 18px);
+    color: var(--ink);
+    padding: 4px 0;
+    opacity: 0; transform: translateX(-8px);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+  }
+  .tool-line.on { opacity: 1; transform: translateX(0); }
+  .tool-line strong { color: var(--accent-2); font-weight: 600; }
+  .tool-line .muted { color: var(--ink-mute); }
+  .snippet {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: #0d1226;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: clamp(12px, 1.25vw, 16px);
+    color: var(--ink);
+    opacity: 0; transform: translateY(6px);
+    transition: opacity 0.4s ease, transform 0.4s ease;
+  }
+  .snippet.on { opacity: 1; transform: translateY(0); }
+  .snippet .snk { color: var(--accent); }
+  .snippet .sst { color: var(--good); }
+
+  /* ---------- Scene 5: Value ---------- */
+  .s5 { background: radial-gradient(900px 600px at 50% 40%, #141a34 0%, transparent 65%); }
+  .value-wrap {
+    display: flex; flex-direction: column; align-items: center; gap: 3.5vh;
+    width: 86%;
+  }
+  .value-eyebrow {
+    font-size: clamp(11px, 1.1vw, 14px);
+    letter-spacing: 0.22em;
+    color: var(--ink-mute);
+    text-transform: uppercase;
+    opacity: 0; transition: opacity 0.5s ease;
+  }
+  .value-eyebrow.on { opacity: 1; }
+  .value-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2.4%;
+    width: 100%;
+  }
+  .vcard {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 3% 2.6%;
+    text-align: left;
+    opacity: 0; transform: translateY(16px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    display: flex; flex-direction: column; gap: 1.4vh;
+  }
+  .vcard.on { opacity: 1; transform: translateY(0); }
+  .vcard .vkey {
+    font-size: clamp(11px, 1.05vw, 13px);
+    letter-spacing: 0.18em;
+    color: var(--ink-mute);
+    text-transform: uppercase;
+  }
+  .vcard .vhead {
+    font-size: clamp(18px, 2.4vw, 30px);
+    font-weight: 800;
+    letter-spacing: -0.015em;
+    line-height: 1.12;
+    background: linear-gradient(180deg, #c8f1ff 0%, var(--accent) 90%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .vcard .vbody {
+    font-size: clamp(12px, 1.2vw, 16px);
+    color: var(--ink-dim);
+    line-height: 1.45;
+  }
+
+  /* ---------- Scene 6: Status & Ask ---------- */
+  .s6 { background: radial-gradient(1100px 700px at 50% 50%, #131a36 0%, transparent 60%); }
+  .ask {
+    display: flex; flex-direction: column; align-items: center; gap: 2.2vh;
+    text-align: center;
+    max-width: 86%;
+  }
+  .ask-status {
+    font-size: clamp(11px, 1.1vw, 14px);
+    letter-spacing: 0.22em;
+    color: var(--accent);
+    text-transform: uppercase;
+    padding: 8px 14px;
+    border: 1px solid rgba(78,201,240,0.4);
+    border-radius: 999px;
+    background: rgba(78,201,240,0.07);
+    opacity: 0; transform: translateY(8px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+  .ask-status.on { opacity: 1; transform: translateY(0); }
+  .ask-line {
+    font-size: clamp(20px, 3vw, 42px);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+    opacity: 0; transform: translateY(10px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .ask-line.on { opacity: 1; transform: translateY(0); }
+  .ask-line .accent { color: var(--accent); }
+  .ask-meta {
+    margin-top: 2vh;
+    display: flex; gap: 28px; flex-wrap: wrap; justify-content: center;
+    color: var(--ink-dim);
+    font-size: clamp(13px, 1.3vw, 17px);
+    opacity: 0; transition: opacity 0.6s ease;
+  }
+  .ask-meta.on { opacity: 1; }
+  .ask-meta span { display: inline-flex; gap: 6px; }
+  .ask-meta .key { color: var(--ink-mute); letter-spacing: 0.14em; text-transform: uppercase; font-size: 0.85em; }
+
+  /* ---------- Scene 7: End ---------- */
+  .s7 { background: #07091a; }
+  .end {
+    display: flex; flex-direction: column; align-items: center; gap: 2vh;
+    opacity: 0; transition: opacity 0.7s ease;
+  }
+  .end.on { opacity: 1; }
+  .end .wordmark {
+    display: flex; align-items: center; gap: 14px;
+    font-size: clamp(28px, 4vw, 56px);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  .end .dot {
+    width: clamp(14px, 1.4vw, 22px);
+    height: clamp(14px, 1.4vw, 22px);
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 28px rgba(78,201,240,0.6);
+  }
+  .end .url {
+    font-size: clamp(13px, 1.3vw, 18px);
+    color: var(--ink-dim);
+    letter-spacing: 0.04em;
+  }
+
+  /* ---------- Controls ---------- */
+  .controls {
+    position: fixed;
+    bottom: 16px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: flex; gap: 10px; align-items: center;
+    background: rgba(15, 20, 36, 0.78);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--line);
+    padding: 8px 12px;
+    border-radius: 999px;
+    color: var(--ink);
+    font-size: 13px;
+    opacity: 0.18;
+    transition: opacity 0.25s ease;
+  }
+  .controls:hover { opacity: 1; }
+  .controls button {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink);
+    padding: 6px 12px;
+    border-radius: 999px;
+    font: inherit;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .controls button:hover { background: #1c2440; border-color: #2e3a66; }
+  .controls .time { color: var(--ink-dim); font-variant-numeric: tabular-nums; min-width: 64px; text-align: center; }
+  .controls .voice-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px;
+  }
+  .controls .voice-btn .vdot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--good); box-shadow: 0 0 8px rgba(92,214,166,0.7);
+  }
+  .controls .voice-btn.off .vdot { background: var(--ink-mute); box-shadow: none; }
+  .controls .voice-btn select {
+    background: transparent;
+    color: var(--ink-dim);
+    border: none; outline: none;
+    font: inherit; font-size: 12px;
+    margin-left: 2px;
+    max-width: 130px;
+  }
+  .controls .voice-btn select option { background: #151b2e; color: var(--ink); }
+
+  .hint {
+    position: fixed; top: 16px; right: 16px;
+    z-index: 100;
+    background: rgba(15, 20, 36, 0.8);
+    border: 1px solid var(--line);
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: var(--ink-dim);
+    font-size: 12px;
+    opacity: 0.8;
+    transition: opacity 0.4s ease;
+  }
+  .hint.gone { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div class="stage-wrap">
+  <div class="stage" id="stage">
+
+    <div class="brand" id="brand">
+      <span class="brand-dot"></span>
+      <span>fglpkg</span>
+    </div>
+
+    <!-- SCENE 1: Hook + PM intro -->
+    <section class="scene s1" data-scene="1">
+      <div class="s1-stack">
+        <div class="s1-eyebrow" data-anim="eyebrow">Genero BDL in 2026</div>
+        <div class="s1-headline" data-anim="headline">No package manager.</div>
+        <div class="s1-sub" data-anim="sub">Every modern language has one. Genero has lived without one for its entire history.</div>
+        <div class="s1-pmrow" data-anim="pmrow">
+          <span class="pm-chip">JavaScript · <strong>npm</strong></span>
+          <span class="pm-chip">Java · <strong>Maven</strong></span>
+          <span class="pm-chip">Python · <strong>pip</strong></span>
+          <span class="pm-chip missing">Genero BDL · <strong>—</strong></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCENE 2: Problem -->
+    <section class="scene s2" data-scene="2">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <div class="terminal-dots"><span></span><span></span><span></span></div>
+          <div class="terminal-title">customer-2026 / ~/dev — bash</div>
+        </div>
+        <div class="terminal-body">
+          <div class="term-line" data-tl="1"><span class="prompt">$</span>cp ../customer-A-project/utils.42m ./</div>
+          <div class="term-line" data-tl="2"><span class="prompt">$</span>cp ../customer-A-project/lib/poi.jar ./lib/</div>
+          <div class="term-line" data-tl="3"><span class="prompt">$</span>cp ../customer-A-project/lib/commons-text-1.9.jar ./lib/</div>
+          <div class="term-line" data-tl="4"><span class="comment"># which version of poi is this? no idea.</span></div>
+          <div class="term-line" data-tl="5"><span class="comment"># any CVEs in commons-text 1.9? <span class="danger">probably.</span></span></div>
+          <div class="term-line" data-tl="6"><span class="comment"># does utils.42m work with Genero 6? we'll find out.</span></div>
+          <div class="term-line" data-tl="7"><span class="comment"># where did this code originally come from? ¯\_(ツ)_/¯</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCENE 3: Insight -->
+    <section class="scene s3" data-scene="3">
+      <div class="insight-wrap">
+        <div class="insight-terminal" data-anim="i-terminal">
+          <div class="terminal-bar">
+            <div class="terminal-dots"><span></span><span></span><span></span></div>
+            <div class="terminal-title">customer-2026 / ~/dev — fglpkg</div>
+          </div>
+          <div class="terminal-body">
+            <div class="term-line" data-il="1"><span class="prompt">$</span>fglpkg install poiapi</div>
+            <div class="term-line" data-il="2"><span class="ok">✓</span> Resolving poiapi@^1.0.0 (Genero 4 variant)</div>
+            <div class="term-line" data-il="3"><span class="ok">✓</span> Downloading 11 Java JARs from Maven Central</div>
+            <div class="term-line" data-il="4"><span class="ok">✓</span> Verified SHA-256 · lockfile written</div>
+            <div class="term-line" data-il="5"><span class="prompt">$</span>fglpkg audit</div>
+            <div class="term-line" data-il="6">1 vulnerability found · <span class="keyword">CVE-2025-31672</span> in poi-ooxml 5.3.0</div>
+          </div>
+        </div>
+        <div class="stack-row" data-anim="stack">
+          <span class="stack-chip">Genero version variants</span>
+          <span class="stack-chip">BDL + Java in one graph</span>
+          <span class="stack-chip">OSV.dev CVE audit</span>
+          <span class="stack-chip">Go CLI · Fly.io · GitHub Releases</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCENE 4: MCP / Agentic AI -->
+    <section class="scene s4" data-scene="4">
+      <div class="chat">
+        <div class="bubble user" data-bubble="user">
+          <div class="label">Developer</div>
+          How do I parse .xlsx files in my Genero project?
+        </div>
+        <div class="bubble agent" data-bubble="agent">
+          <div class="label">AI agent · using <span class="acc">fglpkg MCP</span></div>
+          <div class="tool-line" data-tool="1"><span class="ok">✓</span> Searched the fglpkg registry</div>
+          <div class="tool-line" data-tool="2">Found: <strong>poiapi@1.0.0</strong> — POI API for Genero BDL <span class="muted">(README inline)</span></div>
+          <div class="tool-line" data-tool="3"><span class="ok">✓</span> Verified against OSV.dev — clean</div>
+          <div class="tool-line" data-tool="4"><span class="ok">✓</span> Added to fglpkg.json · lockfile updated</div>
+          <div class="snippet" data-snippet>
+            <span class="snk">IMPORT FGL</span> PoiApi<br/>
+            <span class="snk">CALL</span> PoiApi.openWorkbook(<span class="sst">"data.xlsx"</span>)
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCENE 5: Value -->
+    <section class="scene s5" data-scene="5">
+      <div class="value-wrap">
+        <div class="value-eyebrow" data-anim="v-eyebrow">Three audiences. One platform.</div>
+        <div class="value-cards">
+          <div class="vcard" data-vc="1">
+            <div class="vkey">Professional Services</div>
+            <div class="vhead">Hours back, every engagement.</div>
+            <div class="vbody">Shared utilities reused in one command instead of rebuilt every time. Re-work hours redeployed to billable customer outcomes.</div>
+          </div>
+          <div class="vcard" data-vc="2">
+            <div class="vkey">End-user customers</div>
+            <div class="vhead">Hygiene they couldn't assemble.</div>
+            <div class="vbody">Every Genero shop maintaining its own BDL stack gets the same registry, reproducible builds, and OSV.dev audit — clearing the procurement gate for regulated buyers.</div>
+          </div>
+          <div class="vcard" data-vc="3">
+            <div class="vkey">Agentic AI</div>
+            <div class="vhead">MCP-aware from day one.</div>
+            <div class="vbody">AI coding agents discover, audit, and install packages on the developer's behalf. Every developer — junior, senior, or AI — works at the modern baseline.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCENE 6: Status & Ask -->
+    <section class="scene s6" data-scene="6">
+      <div class="ask">
+        <div class="ask-status" data-anim="status">v2.0.1 shipping · P0 landing · MCP in flight</div>
+        <div class="ask-line" data-line="1">Available to PS <span class="accent">today.</span></div>
+        <div class="ask-line" data-line="2">Rolls out to end-user customers <span class="accent">next.</span></div>
+        <div class="ask-line" data-line="3">Validate demand · build the case · <span class="accent">de-risk the investment.</span></div>
+        <div class="ask-meta" data-meta>
+          <span><span class="key">Status</span>&nbsp;Internal pilot ready</span>
+          <span><span class="key">Contact</span>&nbsp;michael.folcher@4js.com</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCENE 7: End card -->
+    <section class="scene s7" data-scene="7">
+      <div class="end" data-end>
+        <div class="wordmark"><span class="dot"></span><span>fglpkg</span></div>
+        <div class="url">Genero BDL · package manager · registry · MCP-aware</div>
+      </div>
+    </section>
+
+    <div class="progress"><span id="progressBar"></span></div>
+  </div>
+</div>
+
+<div class="controls" id="controls">
+  <button id="btnPlay" title="Play / Pause">▶︎ Play</button>
+  <button id="btnRestart" title="Restart">↻</button>
+  <button id="btnVoice" class="voice-btn" title="Voice on/off (V)">
+    <span class="vdot"></span>
+    <span id="voiceLabel">Voice</span>
+    <select id="voiceSelect" title="Choose voice"></select>
+  </button>
+  <span class="time" id="timeLabel">0.0s / 98.0s</span>
+</div>
+
+<div class="hint" id="hint">Press <strong>Space</strong> to play · <strong>R</strong> restart · <strong>V</strong> voice · <strong>F</strong> fullscreen</div>
+
+<script>
+(() => {
+  const TOTAL = 98;
+
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  // ====== NARRATOR (Web Speech API) ======
+  const narrator = (() => {
+    const supported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+    let voices = [];
+    let chosenVoice = null;
+    let enabled = true;
+    const listeners = new Set();
+
+    const PREFER = [
+      /^Samantha.*(Premium|Enhanced)/i,
+      /^Ava.*(Premium|Enhanced)/i,
+      /^Allison.*(Premium|Enhanced)/i,
+      /^Evan.*(Premium|Enhanced)/i,
+      /^Tom.*(Premium|Enhanced)/i,
+      /^Samantha$/i,
+      /^Daniel/i,
+      /^Karen/i,
+      /^Google US English/i,
+      /^Microsoft (Aria|Jenny|Guy|Davis|Tony)/i,
+      /en[_-]US/i,
+      /en[_-]GB/i,
+      /^en/i,
+    ];
+
+    function pickVoice() {
+      if (!voices.length) return null;
+      for (const re of PREFER) {
+        const v = voices.find(x => re.test(x.name) || re.test(x.lang));
+        if (v) return v;
+      }
+      return voices[0];
+    }
+
+    function refreshVoices() {
+      if (!supported) return;
+      voices = speechSynthesis.getVoices()
+        .filter(v => /^en/i.test(v.lang))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (!chosenVoice) chosenVoice = pickVoice();
+      listeners.forEach(fn => fn());
+    }
+
+    function setVoiceByName(name) {
+      const v = voices.find(x => x.name === name);
+      if (v) chosenVoice = v;
+    }
+
+    function speak(text) {
+      if (!supported || !enabled || !text) return;
+      try { speechSynthesis.cancel(); } catch {}
+      const u = new SpeechSynthesisUtterance(text);
+      if (chosenVoice) u.voice = chosenVoice;
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      u.volume = 1.0;
+      try { speechSynthesis.speak(u); } catch {}
+    }
+
+    function pause() { if (supported) try { speechSynthesis.pause(); } catch {} }
+    function resume() { if (supported) try { speechSynthesis.resume(); } catch {} }
+    function cancel() { if (supported) try { speechSynthesis.cancel(); } catch {} }
+
+    function setEnabled(v) {
+      enabled = v;
+      if (!enabled) cancel();
+    }
+
+    if (supported) {
+      refreshVoices();
+      speechSynthesis.addEventListener('voiceschanged', refreshVoices);
+    }
+
+    return {
+      get supported() { return supported; },
+      get enabled() { return enabled; },
+      get voices() { return voices; },
+      get currentVoiceName() { return chosenVoice ? chosenVoice.name : ''; },
+      setEnabled, setVoiceByName, speak, pause, resume, cancel,
+      onVoicesReady: (fn) => { listeners.add(fn); if (voices.length) fn(); },
+    };
+  })();
+
+  const scenes = $$('.scene');
+  const sceneByNum = (n) => scenes.find(s => +s.dataset.scene === n);
+  const brand = $('#brand');
+
+  const events = [];
+  const at = (t, fn) => events.push({ t, fn });
+
+  const showScene = (n) => {
+    scenes.forEach(s => s.classList.toggle('on', +s.dataset.scene === n));
+  };
+
+  const addCaption = (sceneNum, text, accentText = '') => {
+    const scene = sceneByNum(sceneNum);
+    const node = document.createElement('div');
+    node.className = 'caption';
+    if (accentText) {
+      const safe = text.replace('{a}', `<span class="accent">${accentText}</span>`);
+      node.innerHTML = safe;
+    } else {
+      node.textContent = text;
+    }
+    scene.appendChild(node);
+    return node;
+  };
+  const on = (el) => el && el.classList.add('on');
+  const off = (el) => el && el.classList.remove('on');
+
+  // Narration timing principle:
+  //   - Visuals begin ~0.3s into a scene.
+  //   - Narration begins ~1.5s into a scene (lead-in silence).
+  //   - Narration text is sized to finish 2-3s before the next scene.
+  //   - Result: ~3-4s of silence between successive narrations.
+
+  // ---- Scene 1: Hook + PM intro (0:00 - 0:16) ----
+  at(0.05, () => { showScene(1); off(brand); brand.classList.remove('on'); });
+  at(0.4, () => on(sceneByNum(1).querySelector('[data-anim="eyebrow"]')));
+  at(0.9, () => on(sceneByNum(1).querySelector('[data-anim="headline"]')));
+  at(2.4, () => on(sceneByNum(1).querySelector('[data-anim="sub"]')));
+  at(3.4, () => on(sceneByNum(1).querySelector('[data-anim="pmrow"]')));
+  at(2.0, () => narrator.speak("Every modern language has a package manager — npm, Maven, pip. Each became near-universal because the productivity gain is obvious. Genero BDL has lived without one for its entire history."));
+  const c1 = addCaption(1, 'Genero has had none — {a}.', 'until now');
+  at(12.0, () => on(c1));
+  at(15.0, () => off(c1));
+
+  // ---- Scene 2: Problem (0:16 - 0:32) ----
+  at(16.0, () => { showScene(2); brand.classList.add('on'); });
+  at(16.4, () => on(sceneByNum(2).querySelector('[data-tl="1"]')));
+  at(17.0, () => on(sceneByNum(2).querySelector('[data-tl="2"]')));
+  at(17.6, () => on(sceneByNum(2).querySelector('[data-tl="3"]')));
+  at(18.6, () => on(sceneByNum(2).querySelector('[data-tl="4"]')));
+  at(19.6, () => on(sceneByNum(2).querySelector('[data-tl="5"]')));
+  at(20.6, () => on(sceneByNum(2).querySelector('[data-tl="6"]')));
+  at(21.8, () => on(sceneByNum(2).querySelector('[data-tl="7"]')));
+  at(17.5, () => narrator.speak("Today, BDL teams copy 42m files between projects, ship Java JARs by hand, and cannot answer whether any of these are vulnerable. Every engagement re-solves the same problems from scratch."));
+  const c2 = addCaption(2, 'Every engagement re-solves the {a}.', 'same problems');
+  at(26.5, () => on(c2));
+  at(30.5, () => off(c2));
+
+  // ---- Scene 3: Insight (0:32 - 0:49) ----
+  at(32.0, () => { showScene(3); });
+  at(32.4, () => on(sceneByNum(3).querySelector('[data-anim="i-terminal"]')));
+  at(32.8, () => on(sceneByNum(3).querySelector('[data-il="1"]')));
+  at(33.4, () => on(sceneByNum(3).querySelector('[data-il="2"]')));
+  at(34.0, () => on(sceneByNum(3).querySelector('[data-il="3"]')));
+  at(34.7, () => on(sceneByNum(3).querySelector('[data-il="4"]')));
+  at(35.6, () => on(sceneByNum(3).querySelector('[data-il="5"]')));
+  at(36.4, () => on(sceneByNum(3).querySelector('[data-il="6"]')));
+  at(33.5, () => narrator.speak("We built fglpkg. The same problem npm and Maven solved fifteen years ago — solved for Genero. And with one thing only Genero has: first-class version variants. Install, audit, lockfile — validated end to end."));
+  at(40.0, () => on(sceneByNum(3).querySelector('[data-anim="stack"]')));
+  const c3 = addCaption(3, 'Same problem npm solved. {a}.', 'Now solved for Genero');
+  at(44.0, () => on(c3));
+  at(47.5, () => off(c3));
+
+  // ---- Scene 4: MCP / Agentic AI (0:49 - 1:08) ----
+  at(49.0, () => { showScene(4); });
+  at(49.3, () => on(sceneByNum(4).querySelector('[data-bubble="user"]')));
+  at(50.6, () => on(sceneByNum(4).querySelector('[data-bubble="agent"]')));
+  at(51.5, () => on(sceneByNum(4).querySelector('[data-tool="1"]')));
+  at(52.4, () => on(sceneByNum(4).querySelector('[data-tool="2"]')));
+  at(53.4, () => on(sceneByNum(4).querySelector('[data-tool="3"]')));
+  at(54.4, () => on(sceneByNum(4).querySelector('[data-tool="4"]')));
+  at(55.8, () => on(sceneByNum(4).querySelector('[data-snippet]')));
+  at(50.5, () => narrator.speak("And here is what npm and Maven were never built for: AI-native discovery. fglpkg is MCP-aware from day one. AI agents search the registry, audit dependencies, and install packages on the developer's behalf — turning a question into a working project."));
+  const c4 = addCaption(4, 'MCP-aware. Agents work {a}.', 'without human glue');
+  at(63.0, () => on(c4));
+  at(67.0, () => off(c4));
+
+  // ---- Scene 5: Value (1:08 - 1:24) ----
+  at(68.0, () => { showScene(5); });
+  at(68.4, () => on(sceneByNum(5).querySelector('[data-anim="v-eyebrow"]')));
+  at(69.0, () => on(sceneByNum(5).querySelector('[data-vc="1"]')));
+  at(70.0, () => on(sceneByNum(5).querySelector('[data-vc="2"]')));
+  at(71.0, () => on(sceneByNum(5).querySelector('[data-vc="3"]')));
+  at(69.5, () => narrator.speak("Value lands in three places. Professional Services gets hours back every engagement. End-user customers get dependency hygiene they could never assemble alone. And every developer — junior, senior, or AI agent — works at the modern baseline."));
+  const c5 = addCaption(5, 'PS · end-user customers · {a}.', 'AI agents');
+  at(79.0, () => on(c5));
+  at(83.0, () => off(c5));
+
+  // ---- Scene 6: Status & Ask (1:24 - 1:36) ----
+  at(84.0, () => { showScene(6); });
+  at(84.3, () => on(sceneByNum(6).querySelector('[data-anim="status"]')));
+  at(85.0, () => on(sceneByNum(6).querySelector('[data-line="1"]')));
+  at(86.2, () => on(sceneByNum(6).querySelector('[data-line="2"]')));
+  at(87.4, () => on(sceneByNum(6).querySelector('[data-line="3"]')));
+  at(89.4, () => on(sceneByNum(6).querySelector('[data-meta]')));
+  at(85.5, () => narrator.speak("v2.0.1 ships today. MCP integration in flight. Available to Professional Services now; rolls out to end-user customers next. PS validates demand and de-risks the broader investment — without committing the roadmap up front."));
+
+  // ---- Scene 7: End card (1:36 - 1:38) ----
+  at(95.5, () => { showScene(7); off(brand); });
+  at(95.8, () => on(sceneByNum(7).querySelector('[data-end]')));
+
+  events.sort((a, b) => a.t - b.t);
+
+  // ====== PLAYER ======
+  let startedAt = null;
+  let pausedAt = 0;
+  let playing = false;
+  let raf = null;
+  let firedIdx = 0;
+
+  const btnPlay = $('#btnPlay');
+  const btnRestart = $('#btnRestart');
+  const progressBar = $('#progressBar');
+  const timeLabel = $('#timeLabel');
+  const hint = $('#hint');
+
+  function fireEventsUpTo(t) {
+    while (firedIdx < events.length && events[firedIdx].t <= t) {
+      events[firedIdx].fn();
+      firedIdx++;
+    }
+  }
+
+  function rewindTo(t) {
+    scenes.forEach(s => s.classList.remove('on'));
+    $$('.caption').forEach(c => c.classList.remove('on'));
+    $$('[data-anim]').forEach(el => el.classList.remove('on'));
+    $$('[data-tl], [data-il]').forEach(el => el.classList.remove('on'));
+    $$('[data-tool], [data-snippet]').forEach(el => el.classList.remove('on'));
+    $$('[data-bubble]').forEach(el => el.classList.remove('on'));
+    $$('[data-vc], [data-line], [data-meta], [data-end]').forEach(el => el.classList.remove('on'));
+    brand.classList.remove('on');
+    firedIdx = 0;
+    fireEventsUpTo(t);
+  }
+
+  function tick(now) {
+    if (!playing) return;
+    const elapsed = (now - startedAt) / 1000 + pausedAt;
+    fireEventsUpTo(elapsed);
+    const pct = Math.min(elapsed / TOTAL, 1);
+    progressBar.style.width = (pct * 100) + '%';
+    timeLabel.textContent = `${elapsed.toFixed(1)}s / ${TOTAL.toFixed(1)}s`;
+    if (elapsed >= TOTAL) {
+      playing = false;
+      btnPlay.textContent = '↻ Replay';
+      return;
+    }
+    raf = requestAnimationFrame(tick);
+  }
+
+  function play() {
+    if (playing) return;
+    if (pausedAt >= TOTAL) {
+      pausedAt = 0;
+      rewindTo(0);
+    } else if (pausedAt > 0) {
+      narrator.resume();
+    }
+    playing = true;
+    startedAt = performance.now();
+    btnPlay.textContent = '❚❚ Pause';
+    hint.classList.add('gone');
+    raf = requestAnimationFrame(tick);
+  }
+
+  function pause() {
+    if (!playing) return;
+    playing = false;
+    pausedAt += (performance.now() - startedAt) / 1000;
+    cancelAnimationFrame(raf);
+    narrator.pause();
+    btnPlay.textContent = '▶︎ Play';
+  }
+
+  function restart() {
+    cancelAnimationFrame(raf);
+    playing = false;
+    pausedAt = 0;
+    narrator.cancel();
+    rewindTo(0);
+    progressBar.style.width = '0%';
+    timeLabel.textContent = `0.0s / ${TOTAL.toFixed(1)}s`;
+    btnPlay.textContent = '▶︎ Play';
+  }
+
+  btnPlay.addEventListener('click', () => playing ? pause() : play());
+  btnRestart.addEventListener('click', restart);
+
+  const btnVoice = $('#btnVoice');
+  const voiceLabel = $('#voiceLabel');
+  const voiceSelect = $('#voiceSelect');
+
+  function updateVoiceUI() {
+    if (!narrator.supported) {
+      btnVoice.classList.add('off');
+      btnVoice.title = 'Speech synthesis not supported in this browser';
+      voiceLabel.textContent = 'No voice';
+      voiceSelect.style.display = 'none';
+      return;
+    }
+    btnVoice.classList.toggle('off', !narrator.enabled);
+    voiceLabel.textContent = narrator.enabled ? 'Voice on' : 'Voice off';
+  }
+
+  function fillVoiceSelect() {
+    if (!narrator.supported) return;
+    const current = narrator.currentVoiceName;
+    voiceSelect.innerHTML = '';
+    for (const v of narrator.voices) {
+      const opt = document.createElement('option');
+      opt.value = v.name;
+      opt.textContent = v.name.replace(/\s*\(.*?\)\s*$/, '') + (v.lang ? ` · ${v.lang}` : '');
+      if (v.name === current) opt.selected = true;
+      voiceSelect.appendChild(opt);
+    }
+  }
+
+  btnVoice.addEventListener('click', (e) => {
+    if (e.target === voiceSelect) return;
+    narrator.setEnabled(!narrator.enabled);
+    updateVoiceUI();
+  });
+  voiceSelect.addEventListener('click', (e) => e.stopPropagation());
+  voiceSelect.addEventListener('change', (e) => {
+    narrator.setVoiceByName(e.target.value);
+  });
+
+  narrator.onVoicesReady(() => { fillVoiceSelect(); updateVoiceUI(); });
+  updateVoiceUI();
+
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); playing ? pause() : play(); }
+    else if (e.key === 'r' || e.key === 'R') { restart(); }
+    else if (e.key === 'v' || e.key === 'V') {
+      narrator.setEnabled(!narrator.enabled);
+      updateVoiceUI();
+    }
+    else if (e.key === 'f' || e.key === 'F') {
+      const el = document.documentElement;
+      if (!document.fullscreenElement) el.requestFullscreen?.();
+      else document.exitFullscreen?.();
+    }
+  });
+
+  rewindTo(0);
+})();
+</script>
+
+</body>
+</html>
