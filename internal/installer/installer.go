@@ -141,12 +141,21 @@ func (i *Installer) installFromLock(lf *lockfile.LockFile, opts Options) error {
 		pkgs, jars = lf.ToInstallList()
 	}
 
+	// Filter packages that are already on disk so the parallel phase
+	// only does real work. Already-installed lines are printed
+	// synchronously up front for a stable "already there" prelude.
+	var pkgsToInstall []lockfile.LockedPackage
 	for _, pkg := range pkgs {
 		if _, err := os.Stat(filepath.Join(i.packagesDir, pkg.Name)); err == nil {
 			fmt.Printf("  ✓ %s@%s (already installed)\n", pkg.Name, pkg.Version)
 			continue
 		}
-		fmt.Printf("  → %s@%s\n", pkg.Name, pkg.Version)
+		pkgsToInstall = append(pkgsToInstall, pkg)
+	}
+
+	cap := installConcurrency()
+
+	if err := runParallel(pkgsToInstall, cap, func(pkg lockfile.LockedPackage) error {
 		info := &registry.PackageInfo{
 			Name:        pkg.Name,
 			Version:     pkg.Version,
@@ -156,10 +165,26 @@ func (i *Installer) installFromLock(lf *lockfile.LockFile, opts Options) error {
 		if err := i.Install(info); err != nil {
 			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
 		}
-		fmt.Printf("  ✓ %s@%s\n", pkg.Name, pkg.Version)
+		printSync("  ✓ %s@%s\n", pkg.Name, pkg.Version)
+		return nil
+	}); err != nil {
+		return err
 	}
 
+	// Filter JARs that are already on disk.
+	var jarsToInstall []lockfile.LockedJAR
 	for _, jar := range jars {
+		dep := manifest.JavaDependency{
+			GroupID: jar.GroupID, ArtifactID: jar.ArtifactID, Version: jar.Version,
+		}
+		if _, err := os.Stat(filepath.Join(i.jarsDir, dep.JarFileName())); err == nil {
+			fmt.Printf("  ✓ %s (already present)\n", jar.Key)
+			continue
+		}
+		jarsToInstall = append(jarsToInstall, jar)
+	}
+
+	return runParallel(jarsToInstall, cap, func(jar lockfile.LockedJAR) error {
 		dep := manifest.JavaDependency{
 			GroupID:    jar.GroupID,
 			ArtifactID: jar.ArtifactID,
@@ -167,29 +192,21 @@ func (i *Installer) installFromLock(lf *lockfile.LockFile, opts Options) error {
 			Checksum:   jar.Checksum,
 			URL:        jar.DownloadURL,
 		}
-		if _, err := os.Stat(filepath.Join(i.jarsDir, dep.JarFileName())); err == nil {
-			fmt.Printf("  ✓ %s (already present)\n", jar.Key)
-			continue
-		}
-		fmt.Printf("  → JAR %s\n", jar.Key)
 		if err := i.InstallJar(dep); err != nil {
 			return fmt.Errorf("failed to install JAR %s: %w", jar.Key, err)
 		}
-		fmt.Printf("  ✓ %s\n", jar.Key)
-	}
-	return nil
+		printSync("  ✓ %s\n", jar.Key)
+		return nil
+	})
 }
 
 // installFromPlan installs every entry in a freshly resolved Plan.
 // Optional-scoped items whose download or extraction fails emit a warning
 // and are skipped; hard-scope failures abort the install.
 func (i *Installer) installFromPlan(plan *resolver.Plan) error {
-	for _, pkg := range plan.Packages {
-		fmt.Printf("  → %s@%s", pkg.Name, pkg.Version.String())
-		if len(pkg.RequiredBy) > 0 {
-			fmt.Printf("  (required by: %s)", strings.Join(pkg.RequiredBy, ", "))
-		}
-		fmt.Println()
+	cap := installConcurrency()
+
+	if err := runParallel(plan.Packages, cap, func(pkg resolver.ResolvedPackage) error {
 		info := &registry.PackageInfo{
 			Name:        pkg.Name,
 			Version:     pkg.Version.String(),
@@ -198,25 +215,35 @@ func (i *Installer) installFromPlan(plan *resolver.Plan) error {
 		}
 		if err := i.Install(info); err != nil {
 			if pkg.Scope == manifest.ScopeOptional {
-				fmt.Printf("  warning: skipping optional package %s: %v\n", pkg.Name, err)
-				continue
+				printSync("  warning: skipping optional package %s: %v\n", pkg.Name, err)
+				return nil
 			}
 			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
 		}
-		fmt.Printf("  ✓ %s@%s\n", pkg.Name, pkg.Version.String())
+		// Required-by hint joins the completion line so it doesn't
+		// race onto a separate line from a sibling worker.
+		if len(pkg.RequiredBy) > 0 {
+			printSync("  ✓ %s@%s  (required by: %s)\n",
+				pkg.Name, pkg.Version.String(), strings.Join(pkg.RequiredBy, ", "))
+		} else {
+			printSync("  ✓ %s@%s\n", pkg.Name, pkg.Version.String())
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	for _, dep := range plan.JARs {
-		fmt.Printf("  → JAR %s\n", dep.Key())
+
+	return runParallel(plan.JARs, cap, func(dep manifest.JavaDependency) error {
 		if err := i.InstallJar(dep); err != nil {
 			if plan.JARScopes[dep.Key()] == manifest.ScopeOptional {
-				fmt.Printf("  warning: skipping optional JAR %s: %v\n", dep.Key(), err)
-				continue
+				printSync("  warning: skipping optional JAR %s: %v\n", dep.Key(), err)
+				return nil
 			}
 			return fmt.Errorf("failed to install JAR %s: %w", dep.Key(), err)
 		}
-		fmt.Printf("  ✓ %s\n", dep.JarFileName())
-	}
-	return nil
+		printSync("  ✓ %s\n", dep.JarFileName())
+		return nil
+	})
 }
 
 // Install downloads, verifies, and unpacks a single BDL package.
@@ -267,7 +294,8 @@ func (i *Installer) InstallJar(dep manifest.JavaDependency) error {
 
 	dest := filepath.Join(i.jarsDir, dep.JarFileName())
 	if _, err := os.Stat(dest); err == nil {
-		fmt.Printf("    (already present: %s)\n", dep.JarFileName())
+		// Already on disk. Callers report progress; this fast path is
+		// silent to keep parallel install output clean.
 		return nil
 	}
 
@@ -277,7 +305,6 @@ func (i *Installer) InstallJar(dep manifest.JavaDependency) error {
 	}
 
 	url := dep.MavenURL()
-	fmt.Printf("    Downloading %s\n", url)
 
 	// JavaDependency doesn't carry a checksum field today; pass "" to skip.
 	if err := downloadAndVerify(url, dep.Checksum, dep.JarFileName(), f, ""); err != nil {

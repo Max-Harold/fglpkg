@@ -219,6 +219,7 @@ eval "$(fglpkg env --global)"
 | `FGLPKG_GITHUB_TOKEN` | GitHub PAT for package uploads/downloads (private repo) |
 | `FGLPKG_GITHUB_REPO` | GitHub `owner/repo` for package storage (e.g., `4js-mikefolcher/fglpkg-packages`) |
 | `FGLPKG_GENERO_VERSION` | Override Genero version detection |
+| `FGLPKG_INSTALL_CONCURRENCY` | Cap parallel downloads during install (default 4) |
 | `FGLLDPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
 | `CLASSPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
 
