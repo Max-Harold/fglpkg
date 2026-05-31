@@ -214,14 +214,28 @@ eval "$(fglpkg env --global)"
 | Variable | Purpose |
 |---|---|
 | `FGLPKG_HOME` | Override default `~/.fglpkg` home |
-| `FGLPKG_REGISTRY` | Override default registry URL |
-| `FGLPKG_PUBLISH_TOKEN` | Admin/publish token (bypasses credentials file) |
-| `FGLPKG_GITHUB_TOKEN` | GitHub PAT for package uploads/downloads (private repo) |
+| `FGLPKG_REGISTRY` | Consumer registry URL — used by `install`, `search`, `audit`, `info`, `outdated`, `whoami`, `login`. Default: `https://registry.generointelligence.ai` |
+| `FGLPKG_PUBLISH_REGISTRY` | Publisher registry URL — used by `publish`, `unpublish`, `owner`, `token`, `config`. Falls back to `FGLPKG_REGISTRY` if unset, then to `https://fglpkg-registry.fly.dev` |
+| `FGLPKG_TOKEN` | Bearer token for consumer commands (canonical). Wins over stored credentials when set |
+| `FGLPKG_PUBLISH_TOKEN` | Bearer token for publisher commands. Also accepted as a back-compat fallback by consumer commands when `FGLPKG_TOKEN` is unset |
+| `FGLPKG_GITHUB_TOKEN` | GitHub PAT for package uploads/downloads (private GitHub Releases — only used by the legacy `fglpkg-registry.fly.dev` flow) |
 | `FGLPKG_GITHUB_REPO` | GitHub `owner/repo` for package storage (e.g., `4js-mikefolcher/fglpkg-packages`) |
 | `FGLPKG_GENERO_VERSION` | Override Genero version detection |
 | `FGLPKG_INSTALL_CONCURRENCY` | Cap parallel downloads during install (default 4) |
 | `FGLLDPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
 | `CLASSPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
+
+### Authentication
+
+`fglpkg login` (no args) opens a browser and runs OAuth (auth code + PKCE) against the consumer registry. Tokens are persisted to `~/.fglpkg/credentials.json` and refreshed silently when they expire.
+
+For non-interactive use (CI, SSH boxes, scripts), pass a Personal Access Token:
+
+```bash
+fglpkg login --token gpr_…       # or: export FGLPKG_TOKEN=gpr_…
+```
+
+Publisher commands authenticate against the publisher registry separately — set `FGLPKG_PUBLISH_TOKEN` for those.
 
 ## Usage
 

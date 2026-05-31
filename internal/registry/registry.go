@@ -1,3 +1,15 @@
+// Package registry is the HTTP client for the Genero Package Registry.
+//
+// The consumer side talks the v1 "registry" protocol (paths under
+// /registry/...) used by fglpkg-cli's backend at registry.generointelligence.ai.
+// The publisher side talks the older /packages/... protocol used by the
+// fglpkg-registry.fly.dev server, where fglpkg's `publish`, `unpublish`,
+// `owner`, `token` and `config` commands continue to operate.
+//
+// The split exists because the new registry doesn't yet expose publish
+// endpoints. Consumer commands point at the new base by default; publisher
+// commands point at the old base by default. Users can override via
+// FGLPKG_REGISTRY (consumer) and FGLPKG_PUBLISH_REGISTRY (publisher).
 package registry
 
 import (
@@ -14,15 +26,38 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/semver"
 )
 
-// ErrNotFound is returned (via %w wrapping) when the registry responds
-// 404 to a GET. Callers can detect first-publish or missing-package
-// conditions with `errors.Is(err, registry.ErrNotFound)`.
+// ErrNotFound is returned (via %w wrapping) when the registry responds 404
+// to a GET. Callers can detect first-publish or missing-package conditions
+// with errors.Is(err, registry.ErrNotFound).
 var ErrNotFound = errors.New("package not found in registry")
 
-// Default registry base URL. Override with FGLPKG_REGISTRY env var.
-const defaultRegistry = "https://fglpkg-registry.fly.dev"
+const (
+	defaultConsumerBase  = "https://registry.generointelligence.ai"
+	defaultPublisherBase = "https://fglpkg-registry.fly.dev"
+)
+
+// Bearer is the function the registry HTTP client calls to obtain the
+// current bearer token for consumer-side authenticated requests. CLI swaps
+// this for credentials.ActiveBearer(...) at startup so OAuth refresh +
+// stored PAT lookup are transparent. Default reads env only.
+var Bearer = func() string {
+	if t := strings.TrimSpace(os.Getenv("FGLPKG_TOKEN")); t != "" {
+		return t
+	}
+	return strings.TrimSpace(os.Getenv("FGLPKG_PUBLISH_TOKEN"))
+}
+
+// TryRefresh is called by the registry HTTP client on a 401 to attempt a
+// silent OAuth refresh before retrying the request once. Returns true if a
+// fresh bearer is now available via Bearer(). CLI swaps this for a
+// credentials/oauth-aware closure. Default no-op.
+var TryRefresh = func() bool { return false }
 
 // PackageInfo is the resolved metadata for a specific package version.
+// The shape predates the cli protocol; under the new protocol, FGLDeps /
+// JavaDeps / GeneroConstraint / Variants are populated as best-effort
+// (often empty) since the new registry's package detail does not return
+// them today.
 type PackageInfo struct {
 	Name             string                    `json:"name"`
 	Version          string                    `json:"version"`
@@ -31,21 +66,15 @@ type PackageInfo struct {
 	License          string                    `json:"license,omitempty"`
 	PublishedAt      string                    `json:"publishedAt,omitempty"`
 	DownloadURL      string                    `json:"downloadUrl"`
-	Checksum         string                    `json:"checksum"` // SHA256 hex
-	// GeneroConstraint declares which Genero BDL runtime versions this package
-	// supports, using semver constraint syntax e.g. ">=3.20.0 <5.0.0".
+	Checksum         string                    `json:"checksum"`
 	GeneroConstraint string                    `json:"genero,omitempty"`
 	FGLDeps          map[string]string         `json:"fglDeps,omitempty"`
 	JavaDeps         []manifest.JavaDependency `json:"javaDeps,omitempty"`
 	Variants         []VariantInfo             `json:"variants,omitempty"`
-	// Readme is the package's top-level README content captured at
-	// publish time. Empty when the publisher had no README. Intended
-	// for downstream consumers like an MCP service or web UI; the CLI
-	// does not render it.
-	Readme string `json:"readme,omitempty"`
+	Readme           string                    `json:"readme,omitempty"`
 }
 
-// VariantInfo describes a Genero-major-version-specific build of a package.
+// VariantInfo describes a Genero-major-version-specific build.
 type VariantInfo struct {
 	GeneroMajor string `json:"generoMajor"`
 	DownloadURL string `json:"downloadUrl"`
@@ -56,17 +85,17 @@ type VariantInfo struct {
 type VersionEntry struct {
 	Version          string   `json:"version"`
 	GeneroConstraint string   `json:"genero,omitempty"`
-	Variants         []string `json:"variants,omitempty"` // available Genero major versions
+	Variants         []string `json:"variants,omitempty"`
 }
 
-// VersionList is the registry response listing all available versions of a package.
+// VersionList lists all published versions of a package.
 type VersionList struct {
 	Name           string         `json:"name"`
-	Versions       []string       `json:"versions"`       // kept for backward compat
-	VersionEntries []VersionEntry `json:"versionEntries"` // preferred: includes Genero info
+	Versions       []string       `json:"versions"`
+	VersionEntries []VersionEntry `json:"versionEntries"`
 }
 
-// SearchResult is one entry returned by a registry search.
+// SearchResult is one entry returned by Search.
 type SearchResult struct {
 	Name          string `json:"name"`
 	LatestVersion string `json:"latestVersion"`
@@ -74,107 +103,7 @@ type SearchResult struct {
 	Author        string `json:"author"`
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
-
-// Resolve fetches the best matching version of a package for the given constraint.
-// constraint may be "latest", "*", or any semver constraint string (e.g. "^1.2.0").
-// generoMajor is the Genero major version to select the correct variant; pass ""
-// for legacy packages without variants.
-func Resolve(name, constraint, generoMajor string) (*PackageInfo, error) {
-	vl, err := FetchVersionList(name)
-	if err != nil {
-		return nil, err
-	}
-
-	candidates := make([]semver.Version, 0, len(vl.Versions))
-	for _, vs := range vl.Versions {
-		v, err := semver.Parse(vs)
-		if err != nil {
-			continue // skip malformed entries from registry
-		}
-		candidates = append(candidates, v)
-	}
-
-	c, err := semver.ParseConstraint(constraint)
-	if err != nil {
-		return nil, fmt.Errorf("invalid version constraint %q: %w", constraint, err)
-	}
-
-	best, err := c.Latest(candidates)
-	if err != nil {
-		return nil, fmt.Errorf("no version of %q satisfies constraint %q", name, constraint)
-	}
-
-	return FetchInfoForGenero(name, best.String(), generoMajor)
-}
-
-// FetchVersionList retrieves all published versions for a named package.
-func FetchVersionList(name string) (*VersionList, error) {
-	base := registryBase()
-	u := fmt.Sprintf("%s/packages/%s/versions", base, url.PathEscape(name))
-	data, err := httpGet(u)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch version list for %q: %w", name, err)
-	}
-	var vl VersionList
-	if err := json.Unmarshal(data, &vl); err != nil {
-		return nil, fmt.Errorf("invalid version list response: %w", err)
-	}
-	return &vl, nil
-}
-
-// FetchInfo retrieves full package metadata for an exact name@version.
-func FetchInfo(name, version string) (*PackageInfo, error) {
-	base := registryBase()
-	u := fmt.Sprintf("%s/packages/%s/%s", base, url.PathEscape(name), url.PathEscape(version))
-	data, err := httpGet(u)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch package info for %s@%s: %w", name, version, err)
-	}
-	var info PackageInfo
-	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, fmt.Errorf("invalid package info response: %w", err)
-	}
-	return &info, nil
-}
-
-// FetchInfoForGenero retrieves package metadata with the variant matching the
-// given Genero major version selected. The server resolves the variant and
-// returns the matching downloadUrl/checksum. If generoMajor is empty, this
-// behaves identically to FetchInfo.
-func FetchInfoForGenero(name, version, generoMajor string) (*PackageInfo, error) {
-	base := registryBase()
-	u := fmt.Sprintf("%s/packages/%s/%s", base, url.PathEscape(name), url.PathEscape(version))
-	if generoMajor != "" {
-		u += "?genero=" + url.QueryEscape(generoMajor)
-	}
-	data, err := httpGet(u)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch package info for %s@%s (genero %s): %w", name, version, generoMajor, err)
-	}
-	var info PackageInfo
-	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, fmt.Errorf("invalid package info response: %w", err)
-	}
-	return &info, nil
-}
-
-// Search queries the registry for packages matching term.
-func Search(term string) ([]SearchResult, error) {
-	base := registryBase()
-	u := fmt.Sprintf("%s/search?q=%s", base, url.QueryEscape(term))
-	data, err := httpGet(u)
-	if err != nil {
-		return nil, fmt.Errorf("search failed: %w", err)
-	}
-	var results []SearchResult
-	if err := json.Unmarshal(data, &results); err != nil {
-		return nil, fmt.Errorf("invalid registry response: %w", err)
-	}
-	return results, nil
-}
-
-// RegistryConfig is the configuration returned by the registry server.
+// RegistryConfig is returned by the publisher registry's /config endpoint.
 type RegistryConfig struct {
 	GitHubRepos []GitHubRepo `json:"githubRepos"`
 }
@@ -185,11 +114,133 @@ type GitHubRepo struct {
 	Repo  string `json:"repo"`
 }
 
-// FetchConfig retrieves the registry configuration, including the list of
-// GitHub repos configured for package storage.
+// ─── Consumer API (new /registry/... protocol) ───────────────────────────────
+
+// FetchVersionList returns all published versions of name.
+func FetchVersionList(name string) (*VersionList, error) {
+	d, err := fetchPackageDetail(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch version list for %q: %w", name, err)
+	}
+	out := &VersionList{Name: d.Slug}
+	for _, v := range d.Versions {
+		out.Versions = append(out.Versions, v.Version)
+		variants := make([]string, 0, len(v.Artifacts))
+		for _, a := range v.Artifacts {
+			variants = append(variants, a.Variant)
+		}
+		out.VersionEntries = append(out.VersionEntries, VersionEntry{
+			Version:  v.Version,
+			Variants: variants,
+		})
+	}
+	return out, nil
+}
+
+// FetchInfo retrieves full package metadata for name@version.
+func FetchInfo(name, version string) (*PackageInfo, error) {
+	return FetchInfoForGenero(name, version, "")
+}
+
+// FetchInfoForGenero retrieves package metadata, picking the artifact whose
+// variant matches generoMajor (e.g. "6" → "genero6"). Empty generoMajor or
+// no matching variant falls back to "default", then to the first artifact.
+func FetchInfoForGenero(name, version, generoMajor string) (*PackageInfo, error) {
+	d, err := fetchPackageDetail(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch package info for %s@%s: %w", name, version, err)
+	}
+	var v *apiVersionSummary
+	for i := range d.Versions {
+		if d.Versions[i].Version == version {
+			v = &d.Versions[i]
+			break
+		}
+	}
+	if v == nil {
+		return nil, fmt.Errorf("version %q not found for package %q: %w", version, name, ErrNotFound)
+	}
+	art := pickArtifact(v.Artifacts, generoMajor)
+	if art == nil {
+		return nil, fmt.Errorf("no artifact available for %s@%s", name, version)
+	}
+	info := &PackageInfo{
+		Name:        d.Slug,
+		Version:     v.Version,
+		Description: d.Description,
+		Author:      d.Owner.Name,
+		PublishedAt: v.PublishedAt,
+		DownloadURL: art.DownloadURL,
+		Checksum:    art.SHA256,
+	}
+	for _, a := range v.Artifacts {
+		info.Variants = append(info.Variants, VariantInfo{
+			GeneroMajor: strings.TrimPrefix(a.Variant, "genero"),
+			DownloadURL: a.DownloadURL,
+			Checksum:    a.SHA256,
+		})
+	}
+	return info, nil
+}
+
+// Resolve fetches the best matching version of name for the given constraint.
+// constraint may be "latest", "*", or any semver constraint string (e.g.
+// "^1.2.0"). generoMajor selects the variant; "" picks the default.
+func Resolve(name, constraint, generoMajor string) (*PackageInfo, error) {
+	vl, err := FetchVersionList(name)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]semver.Version, 0, len(vl.Versions))
+	for _, vs := range vl.Versions {
+		v, err := semver.Parse(vs)
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, v)
+	}
+	c, err := semver.ParseConstraint(constraint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid version constraint %q: %w", constraint, err)
+	}
+	best, err := c.Latest(candidates)
+	if err != nil {
+		return nil, fmt.Errorf("no version of %q satisfies constraint %q", name, constraint)
+	}
+	return FetchInfoForGenero(name, best.String(), generoMajor)
+}
+
+// Search queries the consumer registry for packages matching term.
+func Search(term string) ([]SearchResult, error) {
+	u := fmt.Sprintf("%s/registry/packages?q=%s", consumerBase(), url.QueryEscape(term))
+	data, err := httpGetAuthed(u)
+	if err != nil {
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+	var br apiBrowseResponse
+	if err := json.Unmarshal(data, &br); err != nil {
+		return nil, fmt.Errorf("invalid registry response: %w", err)
+	}
+	results := make([]SearchResult, 0, len(br.Packages))
+	for _, p := range br.Packages {
+		results = append(results, SearchResult{
+			Name:          p.Slug,
+			LatestVersion: p.LatestVersion,
+			Description:   p.Description,
+			Author:        p.Owner.Name,
+		})
+	}
+	return results, nil
+}
+
+// ─── Publisher API (old /packages/... + /config + /auth/... protocol) ────────
+
+// FetchConfig returns the publisher registry's configuration, including the
+// list of GitHub repos configured for package storage. This endpoint exists
+// only on the publisher registry.
 func FetchConfig() (*RegistryConfig, error) {
-	base := registryBase()
-	data, err := httpGet(base + "/config")
+	base := publisherBase()
+	data, err := httpGetPublisher(base + "/config")
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch registry config: %w", err)
 	}
@@ -200,32 +251,193 @@ func FetchConfig() (*RegistryConfig, error) {
 	return &cfg, nil
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+// PublisherVersionList lists published versions via the OLD endpoint, used
+// by publish-time validation (so the publisher can check "does this version
+// already exist on the registry I'm about to publish to?").
+func PublisherVersionList(name string) (*VersionList, error) {
+	u := fmt.Sprintf("%s/packages/%s/versions", publisherBase(), url.PathEscape(name))
+	data, err := httpGetPublisher(u)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch publisher version list for %q: %w", name, err)
+	}
+	var vl VersionList
+	if err := json.Unmarshal(data, &vl); err != nil {
+		return nil, fmt.Errorf("invalid publisher version list response: %w", err)
+	}
+	return &vl, nil
+}
 
-func registryBase() string {
+// ─── Internal: new-protocol types ────────────────────────────────────────────
+
+type apiArtifact struct {
+	Variant     string `json:"variant"`
+	Filename    string `json:"filename"`
+	SizeBytes   int64  `json:"size_bytes"`
+	SHA256      string `json:"sha256"`
+	DownloadURL string `json:"download_url"`
+}
+
+type apiVersionSummary struct {
+	Version       string              `json:"version"`
+	Status        string              `json:"status"`
+	Changelog     string              `json:"changelog"`
+	Tags          map[string][]string `json:"tags"`
+	Artifacts     []apiArtifact       `json:"artifacts"`
+	SubmittedAt   string              `json:"submitted_at"`
+	PublishedAt   string              `json:"published_at"`
+	ReviewComment string              `json:"review_comment"`
+}
+
+type apiOwner struct {
+	PartnerID string `json:"partner_id"`
+	Name      string `json:"name"`
+}
+
+type apiListedPackage struct {
+	Slug          string              `json:"slug"`
+	Name          string              `json:"name"`
+	Description   string              `json:"description"`
+	Visibility    string              `json:"visibility"`
+	Owner         apiOwner            `json:"owner"`
+	Status        string              `json:"status"`
+	LatestVersion string              `json:"latest_version"`
+	Downloads     int64               `json:"downloads"`
+	Tags          map[string][]string `json:"tags"`
+}
+
+type apiPackageDetail struct {
+	apiListedPackage
+	Versions []apiVersionSummary `json:"versions"`
+}
+
+type apiBrowseResponse struct {
+	Packages []apiListedPackage `json:"packages"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"pageSize"`
+	Total    int                `json:"total"`
+}
+
+func fetchPackageDetail(slug string) (*apiPackageDetail, error) {
+	u := fmt.Sprintf("%s/registry/packages/%s", consumerBase(), url.PathEscape(slug))
+	data, err := httpGetAuthed(u)
+	if err != nil {
+		return nil, err
+	}
+	var d apiPackageDetail
+	if err := json.Unmarshal(data, &d); err != nil {
+		return nil, fmt.Errorf("invalid package detail response: %w", err)
+	}
+	if d.Slug == "" {
+		d.Slug = slug
+	}
+	return &d, nil
+}
+
+// pickArtifact selects the best matching artifact for generoMajor.
+// Order of preference:
+//  1. exact "genero<N>" match
+//  2. "default"
+//  3. first listed
+func pickArtifact(arts []apiArtifact, generoMajor string) *apiArtifact {
+	if len(arts) == 0 {
+		return nil
+	}
+	if generoMajor != "" {
+		want := "genero" + generoMajor
+		for i := range arts {
+			if arts[i].Variant == want {
+				return &arts[i]
+			}
+		}
+	}
+	for i := range arts {
+		if arts[i].Variant == "default" {
+			return &arts[i]
+		}
+	}
+	return &arts[0]
+}
+
+// ─── Internal: HTTP ──────────────────────────────────────────────────────────
+
+func consumerBase() string {
 	if r := os.Getenv("FGLPKG_REGISTRY"); r != "" {
 		return strings.TrimRight(r, "/")
 	}
-	return defaultRegistry
+	return defaultConsumerBase
 }
 
-func httpGet(url string) ([]byte, error) {
-	resp, err := http.Get(url)
+func publisherBase() string {
+	if r := os.Getenv("FGLPKG_PUBLISH_REGISTRY"); r != "" {
+		return strings.TrimRight(r, "/")
+	}
+	if r := os.Getenv("FGLPKG_REGISTRY"); r != "" {
+		return strings.TrimRight(r, "/")
+	}
+	return defaultPublisherBase
+}
+
+// httpGetAuthed performs a GET against the consumer registry, sending the
+// current Bearer() as an Authorization header. On a 401, calls TryRefresh()
+// once and retries.
+func httpGetAuthed(u string) ([]byte, error) {
+	body, status, err := authedGet(u, Bearer())
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusUnauthorized && TryRefresh() {
+		body, status, err = authedGet(u, Bearer())
+		if err != nil {
+			return nil, err
+		}
+	}
+	return finalise(body, status)
+}
+
+// httpGetPublisher performs an unauthenticated GET against the publisher
+// registry. The current publisher commands keep their PAT-based auth in cli;
+// this helper exists for the few endpoints (e.g. /config, /packages/<name>/versions)
+// that are world-readable today.
+func httpGetPublisher(u string) ([]byte, error) {
+	resp, err := http.Get(u)
 	if err != nil {
 		return nil, fmt.Errorf("registry request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read registry response: %w", err)
 	}
+	return finalise(body, resp.StatusCode)
+}
 
-	if resp.StatusCode == http.StatusNotFound {
+func authedGet(u, bearer string) ([]byte, int, error) {
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("registry request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read registry response: %w", err)
+	}
+	return body, resp.StatusCode, nil
+}
+
+func finalise(body []byte, status int) ([]byte, error) {
+	if status == http.StatusNotFound {
 		return nil, ErrNotFound
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("registry returned HTTP %d: %s", resp.StatusCode, string(body))
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("registry returned HTTP %d: %s", status, string(body))
 	}
 	return body, nil
 }

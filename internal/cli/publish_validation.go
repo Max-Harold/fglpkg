@@ -25,7 +25,7 @@ import (
 // behaviour and block on any version-string match, since we have no way
 // to tell which variants exist.
 func checkVariantNotPublished(m *manifest.Manifest, generoMajor string) error {
-	vl, err := registry.FetchVersionList(m.Name)
+	vl, err := registry.PublisherVersionList(m.Name)
 	if err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
 			// First publish for this package name. Nothing to clobber.

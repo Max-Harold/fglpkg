@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,9 +26,31 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/installer"
 	"github.com/4js-mikefolcher/fglpkg/internal/lockfile"
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
+	"github.com/4js-mikefolcher/fglpkg/internal/oauth"
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/workspace"
 )
+
+// init wires registry.Bearer / TryRefresh to the credentials package's
+// consumer-side resolver so OAuth refresh, stored PAT, and env-var override
+// all flow through the registry HTTP client transparently.
+func init() {
+	registry.Bearer = func() string {
+		home, err := fglpkgHome()
+		if err != nil {
+			return credentials.ConsumerEnvBearer()
+		}
+		tok, _ := credentials.ActiveBearer(context.Background(), home, defaultRegistry(), oauth.Refresh)
+		return tok
+	}
+	registry.TryRefresh = func() bool {
+		home, err := fglpkgHome()
+		if err != nil {
+			return false
+		}
+		return credentials.ForceRefresh(context.Background(), home, defaultRegistry(), oauth.Refresh)
+	}
+}
 
 // Version and Build are set at compile time via -ldflags.
 var (
@@ -608,14 +631,14 @@ func cmdPublish(args []string) error {
 	if err := checkVariantNotPublished(m, generoMajor); err != nil {
 		return err
 	}
-	registryURL := defaultRegistry()
-	token := credentials.TokenFor(home, registryURL)
+	registryURL := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, registryURL)
 	if token == "" {
-		return fmt.Errorf("not logged in to %s\nRun 'fglpkg login' or set FGLPKG_PUBLISH_TOKEN", registryURL)
+		return fmt.Errorf("not logged in to publish registry %s\nSet FGLPKG_PUBLISH_TOKEN or store a token via 'fglpkg login' against that registry", registryURL)
 	}
 	githubToken := credentials.GitHubTokenFor(home, registryURL)
 	if githubToken == "" {
-		return fmt.Errorf("GitHub token required for publishing\nSet FGLPKG_GITHUB_TOKEN or run 'fglpkg login'")
+		return fmt.Errorf("GitHub token required for publishing\nSet FGLPKG_GITHUB_TOKEN")
 	}
 	owner, repo, err := resolveGitHubRepo()
 	if err != nil {
@@ -1102,10 +1125,10 @@ func cmdUnpublish(args []string) error {
 	if err != nil {
 		return err
 	}
-	registryURL := defaultRegistry()
-	token := credentials.TokenFor(home, registryURL)
+	registryURL := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, registryURL)
 	if token == "" {
-		return fmt.Errorf("not logged in to %s\nRun 'fglpkg login' or set FGLPKG_PUBLISH_TOKEN", registryURL)
+		return fmt.Errorf("not logged in to publish registry %s\nSet FGLPKG_PUBLISH_TOKEN", registryURL)
 	}
 
 	fmt.Printf("Unpublishing %s@%s...\n", name, version)
@@ -1150,41 +1173,115 @@ func cmdUnpublish(args []string) error {
 
 // ─── login ────────────────────────────────────────────────────────────────────
 
-func cmdLogin(_ []string) error {
+// cmdLogin signs the user into the consumer registry.
+//
+//	fglpkg login                   # browser OAuth (code + PKCE)
+//	fglpkg login --token <gpr_…>   # non-interactive: store the supplied PAT
+//
+// The browser flow registers a one-off public OAuth client via DCR, runs auth
+// code + PKCE against the registry, persists the resulting access + refresh
+// tokens, and verifies via whoami. The --token flow skips the browser and
+// just stores the PAT; whoami is attempted but a failure does not block
+// storage (so offline CI bootstrap works).
+func cmdLogin(args []string) error {
 	home, err := fglpkgHome()
 	if err != nil {
 		return err
 	}
-	registryURL := promptWithDefault("Registry URL", defaultRegistry())
-	token := promptWithDefault("Token", "")
-	if token == "" {
-		return fmt.Errorf("token cannot be empty")
-	}
-	username, err := whoamiRequest(registryURL, token)
+	registryURL := defaultRegistry()
+
+	pat, err := parseLoginArgs(args)
 	if err != nil {
-		return fmt.Errorf("login failed: %w", err)
+		return err
 	}
+
 	creds, err := credentials.Load(home)
 	if err != nil {
 		return err
 	}
-	creds.Set(registryURL, token, username)
 
-	githubToken := promptWithDefault("GitHub token (optional, for package downloads)", "")
-	if githubToken != "" {
-		creds.SetGitHubToken(registryURL, githubToken)
+	if pat != "" {
+		if !strings.HasPrefix(pat, "gpr_") {
+			fmt.Fprintln(os.Stderr, "  Warning: PAT does not start with 'gpr_' — storing anyway.")
+		}
+		creds.Set(registryURL, pat, "")
+		if err := creds.Save(home); err != nil {
+			return err
+		}
+		who, err := whoamiRequest(registryURL, pat)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: token stored but verification failed: %v\n", err)
+			fmt.Printf("✓ Token saved for %s\n", registryURL)
+			return nil
+		}
+		fmt.Printf("✓ Logged in to %s as %s\n", registryURL, whoamiSubject(who))
+		return nil
 	}
 
+	// Browser OAuth flow.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tokens, err := oauth.RunLogin(ctx, registryURL, oauth.LoginConfig{})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "  To use a Personal Access Token instead: fglpkg login --token <gpr_…>")
+		return fmt.Errorf("login failed: %w", err)
+	}
+	creds.SetOAuth(registryURL, tokens, "")
 	if err := creds.Save(home); err != nil {
 		return err
 	}
-	fmt.Printf("✓ Logged in to %s as %s\n", registryURL, username)
-	if githubToken != "" {
-		fmt.Println("✓ GitHub token saved for package downloads")
-	} else {
-		fmt.Println("  GitHub token skipped (set FGLPKG_GITHUB_TOKEN for downloads from private repos)")
+	who, err := whoamiRequest(registryURL, tokens.AccessToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: tokens stored but verification failed: %v\n", err)
+		fmt.Printf("✓ Tokens saved for %s\n", registryURL)
+		return nil
+	}
+	fmt.Printf("✓ Logged in to %s as %s\n", registryURL, whoamiSubject(who))
+	if tokens.RefreshToken != "" {
+		fmt.Println("  Access token will be refreshed automatically while you stay signed in.")
 	}
 	return nil
+}
+
+// parseLoginArgs reads the (very small) flag surface of `fglpkg login`.
+func parseLoginArgs(args []string) (pat string, err error) {
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch a {
+		case "--token":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("--token requires a value")
+			}
+			pat = strings.TrimSpace(args[i+1])
+			i += 2
+		case "-h", "--help":
+			fmt.Println("usage: fglpkg login [--token <PAT>]")
+			os.Exit(0)
+		default:
+			return "", fmt.Errorf("unknown argument %q\nusage: fglpkg login [--token <PAT>]", a)
+		}
+	}
+	return pat, nil
+}
+
+// whoamiSubject returns a one-line subject for "Logged in as …" messages.
+// Prefers "Name <email>", falls back to email, then User.ID, then "(user)".
+func whoamiSubject(w whoamiResult) string {
+	name := strings.TrimSpace(w.User.Name)
+	email := strings.TrimSpace(w.User.Email)
+	switch {
+	case name != "" && email != "":
+		return fmt.Sprintf("%s <%s>", name, email)
+	case email != "":
+		return email
+	case name != "":
+		return name
+	case w.User.ID != "":
+		return w.User.ID
+	default:
+		return "(user)"
+	}
 }
 
 // ─── logout ───────────────────────────────────────────────────────────────────
@@ -1194,7 +1291,7 @@ func cmdLogout(_ []string) error {
 	if err != nil {
 		return err
 	}
-	registryURL := promptWithDefault("Registry URL", defaultRegistry())
+	registryURL := defaultRegistry()
 	creds, err := credentials.Load(home)
 	if err != nil {
 		return err
@@ -1219,20 +1316,34 @@ func cmdWhoami(_ []string) error {
 		return err
 	}
 	registryURL := defaultRegistry()
-	token := credentials.TokenFor(home, registryURL)
+	token, err := credentials.ActiveBearer(context.Background(), home, registryURL, oauth.Refresh)
+	if err != nil {
+		return err
+	}
 	if token == "" {
 		return fmt.Errorf("not logged in to %s\nRun 'fglpkg login' first", registryURL)
 	}
-	username, err := whoamiRequest(registryURL, token)
+	who, err := whoamiRequest(registryURL, token)
 	if err != nil {
 		return fmt.Errorf("whoami failed: %w", err)
 	}
-	fmt.Printf("Logged in to %s as %s\n", registryURL, username)
+	fmt.Printf("Registry: %s\n", registryURL)
+	fmt.Printf("User:     %s\n", whoamiSubject(who))
+	if who.Partner != nil {
+		fmt.Printf("Partner:  %s\n", who.Partner.Name)
+	} else {
+		fmt.Println("Partner:  (none)")
+	}
+	if len(who.Scopes) > 0 {
+		fmt.Printf("Scopes:   %s\n", strings.Join(who.Scopes, ", "))
+	} else {
+		fmt.Println("Scopes:   (none)")
+	}
 	ghToken := credentials.GitHubTokenFor(home, registryURL)
 	if ghToken != "" {
 		fmt.Println("GitHub token: configured")
 	} else {
-		fmt.Println("GitHub token: not configured (set FGLPKG_GITHUB_TOKEN or run fglpkg login)")
+		fmt.Println("GitHub token: not configured (set FGLPKG_GITHUB_TOKEN)")
 	}
 	return nil
 }
@@ -1267,8 +1378,8 @@ func cmdOwner(args []string) error {
 
 func cmdOwnerList(pkg string) error {
 	home, _ := fglpkgHome()
-	reg := defaultRegistry()
-	token := credentials.TokenFor(home, reg)
+	reg := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, reg)
 	resp, err := authGet(reg+"/packages/"+pkg+"/owners", token)
 	if err != nil {
 		return err
@@ -1290,8 +1401,8 @@ func cmdOwnerList(pkg string) error {
 
 func cmdOwnerAdd(pkg, username string) error {
 	home, _ := fglpkgHome()
-	reg := defaultRegistry()
-	token := credentials.TokenFor(home, reg)
+	reg := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, reg)
 	if token == "" {
 		return fmt.Errorf("not logged in — run 'fglpkg login'")
 	}
@@ -1310,8 +1421,8 @@ func cmdOwnerAdd(pkg, username string) error {
 
 func cmdOwnerRemove(pkg, username string) error {
 	home, _ := fglpkgHome()
-	reg := defaultRegistry()
-	token := credentials.TokenFor(home, reg)
+	reg := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, reg)
 	if token == "" {
 		return fmt.Errorf("not logged in — run 'fglpkg login'")
 	}
@@ -1338,8 +1449,8 @@ func cmdToken(args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 	home, _ := fglpkgHome()
-	reg := defaultRegistry()
-	token := credentials.TokenFor(home, reg)
+	reg := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, reg)
 	if token == "" {
 		return fmt.Errorf("not logged in — run 'fglpkg login'")
 	}
@@ -1468,8 +1579,8 @@ func cmdConfigGitHubReposAdd(ownerRepo string) error {
 		return err
 	}
 	home, _ := fglpkgHome()
-	reg := defaultRegistry()
-	token := credentials.TokenFor(home, reg)
+	reg := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, reg)
 	if token == "" {
 		return fmt.Errorf("not logged in — run 'fglpkg login'")
 	}
@@ -1492,8 +1603,8 @@ func cmdConfigGitHubReposRemove(ownerRepo string) error {
 		return err
 	}
 	home, _ := fglpkgHome()
-	reg := defaultRegistry()
-	token := credentials.TokenFor(home, reg)
+	reg := defaultPublishRegistry()
+	token := credentials.ActivePublishBearer(home, reg)
 	if token == "" {
 		return fmt.Errorf("not logged in — run 'fglpkg login'")
 	}
@@ -1931,24 +2042,72 @@ func collectDocFiles(pkgDir string, patterns []string) ([]string, error) {
 
 // ─── Auth HTTP helpers ────────────────────────────────────────────────────────
 
-func whoamiRequest(registryURL, token string) (string, error) {
-	resp, err := authGet(strings.TrimRight(registryURL, "/")+"/auth/whoami", token)
+// whoamiResult is the merged view of /registry/whoami (new protocol) and
+// /auth/whoami (legacy). Empty fields are rendered as "(none)".
+type whoamiResult struct {
+	User struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Name  string `json:"name"`
+	} `json:"user"`
+	Partner *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"partner"`
+	Scopes []string `json:"scopes"`
+
+	// Legacy fields surfaced by /auth/whoami.
+	Username string `json:"username,omitempty"`
+}
+
+// whoamiRequest probes the consumer registry's /registry/whoami endpoint,
+// falling back to /auth/whoami on 404. The legacy response only carries a
+// username; we surface it via User.Name so the output formatter has
+// something to print.
+func whoamiRequest(registryURL, token string) (whoamiResult, error) {
+	base := strings.TrimRight(registryURL, "/")
+	res, err := whoamiFetch(base+"/registry/whoami", token)
+	if err == nil {
+		return res, nil
+	}
+	// Fall back to /auth/whoami only on 404 — other statuses indicate a
+	// real failure that the new endpoint already surfaced.
+	if err != errNotFound {
+		return whoamiResult{}, err
+	}
+	legacy, err := whoamiFetch(base+"/auth/whoami", token)
 	if err != nil {
-		return "", err
+		return whoamiResult{}, err
+	}
+	if legacy.Username != "" && legacy.User.Name == "" {
+		legacy.User.Name = legacy.Username
+	}
+	return legacy, nil
+}
+
+func whoamiFetch(u, token string) (whoamiResult, error) {
+	resp, err := authGet(u, token)
+	if err != nil {
+		return whoamiResult{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return whoamiResult{}, errNotFound
+	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		return "", fmt.Errorf("invalid token")
+		return whoamiResult{}, fmt.Errorf("invalid or expired token")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", registryError(resp)
+		return whoamiResult{}, registryError(resp)
 	}
-	var result struct {
-		Username string `json:"username"`
+	var out whoamiResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return whoamiResult{}, fmt.Errorf("invalid whoami response: %w", err)
 	}
-	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
-	return result.Username, nil
+	return out, nil
 }
+
+var errNotFound = fmt.Errorf("not found")
 
 func authGet(url, token string) (*http.Response, error) {
 	return authDo(http.MethodGet, url, token, "")
@@ -2047,12 +2206,16 @@ FLAGS (for env only):
   --gst             Output in Genero Studio format (implies --local)
 
 ENVIRONMENT:
-  FGLPKG_HOME            Override ~/.fglpkg
-  FGLPKG_REGISTRY        Override default registry URL
-  FGLPKG_PUBLISH_TOKEN   Admin/publish token (bypasses credentials file)
-  FGLPKG_GITHUB_TOKEN    GitHub PAT for package uploads/downloads (private repo)
-  FGLPKG_GITHUB_REPO     GitHub owner/repo for package storage
-  FGLPKG_GENERO_VERSION  Override Genero version detection
+  FGLPKG_HOME              Override ~/.fglpkg
+  FGLPKG_REGISTRY          Consumer registry URL (install/search/audit/whoami)
+  FGLPKG_PUBLISH_REGISTRY  Publisher registry URL (publish/unpublish/owner/token/config)
+  FGLPKG_TOKEN             Bearer for consumer commands (canonical)
+  FGLPKG_PUBLISH_TOKEN     Bearer for publisher commands; also accepted by
+                           consumer commands as a back-compat fallback
+  FGLPKG_GITHUB_TOKEN      GitHub PAT for package uploads/downloads (private repo)
+  FGLPKG_GITHUB_REPO       GitHub owner/repo for package storage
+  FGLPKG_GENERO_VERSION    Override Genero version detection
+  FGLPKG_INSTALL_CONCURRENCY  Cap parallel downloads during install (default 4)
 
 `)
 	if runtime.GOOS == "windows" {
@@ -2109,15 +2272,37 @@ func newInstaller(home string) *installer.Installer {
 		globalHome = home
 	}
 	registryURL := defaultRegistry()
+	// GitHub token only matters for the legacy fglpkg-registry.fly.dev flow
+	// (downloads indirected to private GitHub Releases). The new registry
+	// serves zips itself, so the warning is downgraded — only surface it
+	// when the consumer registry IS the legacy one.
 	githubToken := credentials.GitHubTokenFor(globalHome, registryURL)
-	if githubToken == "" {
+	if githubToken == "" && strings.Contains(registryURL, "fglpkg-registry.fly.dev") {
 		fmt.Println("  Warning: no GitHub token configured — downloads from private repos will fail")
-		fmt.Println("  Run 'fglpkg login' or set FGLPKG_GITHUB_TOKEN")
+		fmt.Println("  Set FGLPKG_GITHUB_TOKEN")
 	}
-	return installer.New(home, githubToken)
+	registryToken, _ := credentials.ActiveBearer(context.Background(), globalHome, registryURL, oauth.Refresh)
+	return installer.New(home, githubToken, registryToken)
 }
 
+// defaultRegistry returns the consumer registry URL — install, search,
+// audit, info, outdated, list, env, whoami, login, logout. Override with
+// FGLPKG_REGISTRY.
 func defaultRegistry() string {
+	if r := os.Getenv("FGLPKG_REGISTRY"); r != "" {
+		return strings.TrimRight(r, "/")
+	}
+	return "https://registry.generointelligence.ai"
+}
+
+// defaultPublishRegistry returns the publisher registry URL — publish,
+// unpublish, owner, token, config. Stays on fglpkg-registry.fly.dev until
+// the new server adds publish endpoints. Override with FGLPKG_PUBLISH_REGISTRY,
+// falling back to FGLPKG_REGISTRY for self-hosted single-registry setups.
+func defaultPublishRegistry() string {
+	if r := os.Getenv("FGLPKG_PUBLISH_REGISTRY"); r != "" {
+		return strings.TrimRight(r, "/")
+	}
 	if r := os.Getenv("FGLPKG_REGISTRY"); r != "" {
 		return strings.TrimRight(r, "/")
 	}
