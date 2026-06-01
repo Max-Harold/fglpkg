@@ -534,7 +534,16 @@ func cmdPublish(args []string) error {
 	if err := m.ValidateForPublish(); err != nil {
 		return err
 	}
-	if err := checkVersionNotPublished(m); err != nil {
+	// Detect Genero before the publish check so the latter can reject only
+	// when the SAME variant (not just the same version string) is already
+	// published. Allows adding new Genero major variants to an existing
+	// version.
+	gv, err := genero.Detect()
+	if err != nil {
+		return fmt.Errorf("cannot detect Genero version: %w", err)
+	}
+	generoMajor := gv.MajorString()
+	if err := checkVariantNotPublished(m, generoMajor); err != nil {
 		return err
 	}
 	registryURL := defaultRegistry()
@@ -550,12 +559,6 @@ func cmdPublish(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	gv, err := genero.Detect()
-	if err != nil {
-		return fmt.Errorf("cannot detect Genero version: %w", err)
-	}
-	generoMajor := gv.MajorString()
 
 	if dryRun {
 		fmt.Printf("DRY RUN — no network calls will be made\n\n")
