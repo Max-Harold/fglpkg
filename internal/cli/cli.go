@@ -511,24 +511,65 @@ func cmdEnv(args []string) error {
 // ─── search ───────────────────────────────────────────────────────────────────
 
 func cmdSearch(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: fglpkg search <term>")
-	}
-	results, err := registry.Search(args[0])
+	term, all, err := parseSearchArgs(args)
 	if err != nil {
+		return err
+	}
+
+	results, err := registry.Search(term)
+	if err != nil {
+		// Older registry servers reject an empty q with 400 — surface a
+		// clean hint instead of the raw transport error.
+		if all && strings.Contains(err.Error(), "HTTP 400") {
+			return fmt.Errorf("this registry doesn't support --all (returned HTTP 400)\n" +
+				"upgrade the registry, or pass a search term instead")
+		}
 		return fmt.Errorf("search failed: %w", err)
 	}
+
 	if len(results) == 0 {
-		fmt.Printf("No packages found matching %q\n", args[0])
+		if all {
+			fmt.Println("No packages in the registry.")
+		} else {
+			fmt.Printf("No packages found matching %q\n", term)
+		}
 		return nil
 	}
-	fmt.Printf("Results for %q:\n", args[0])
+	if all {
+		fmt.Printf("All packages (%d):\n", len(results))
+	} else {
+		fmt.Printf("Results for %q:\n", term)
+	}
 	fmt.Printf("  %-30s %-12s %s\n", "NAME", "VERSION", "DESCRIPTION")
 	fmt.Printf("  %-30s %-12s %s\n", "----", "-------", "-----------")
 	for _, r := range results {
 		fmt.Printf("  %-30s %-12s %s\n", r.Name, r.LatestVersion, r.Description)
 	}
 	return nil
+}
+
+// parseSearchArgs returns the keyword term plus an --all flag. Errors on
+// `search` with no args + no --all (the historical "missing keyword" error),
+// and on conflicting `search --all <term>`.
+func parseSearchArgs(args []string) (term string, all bool, err error) {
+	for _, a := range args {
+		switch a {
+		case "--all":
+			all = true
+		default:
+			if term != "" {
+				return "", false, fmt.Errorf("unexpected extra argument %q", a)
+			}
+			term = a
+		}
+	}
+	if all && term != "" {
+		return "", false, fmt.Errorf("--all and <term> are mutually exclusive")
+	}
+	if !all && term == "" {
+		return "", false, fmt.Errorf("usage: fglpkg search <term>   |   fglpkg search --all")
+	}
+	return term, all, nil
 }
 
 // ─── publish ──────────────────────────────────────────────────────────────────
@@ -1961,7 +2002,7 @@ COMMANDS:
   update            Re-resolve and update all dependencies
   list              List installed packages
   env               Print environment variable exports
-  search <term>     Search the registry
+  search <term>     Search the registry (use --all to list every package)
   info <pkg>[@ver]  Show registry metadata for a package (--json for raw output)
   outdated          Show FGL deps with newer versions available (--json for JSON)
   audit             Check installed Java JARs for known vulnerabilities
