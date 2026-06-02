@@ -136,7 +136,16 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
-	home, isLocal, err := resolveHome(flags.local, flags.global)
+	// `fglpkg install <pkg>` in a directory that isn't yet a project (no
+	// .fglpkg/, no fglpkg.json) is treated as local: the add-package branch
+	// will call manifest.LoadOrNew(".") which writes fglpkg.json HERE, so
+	// the directory IS becoming a project. Without this, the package would
+	// install globally while the manifest landed locally — silent
+	// inconsistency that bit Laurent in SUPNA-10506.
+	addingToNewProject := installImpliesNewProject(flags, isProjectDir())
+	forceLocal := flags.local || addingToNewProject
+
+	home, isLocal, err := resolveHome(forceLocal, flags.global)
 	if err != nil {
 		return err
 	}
@@ -146,6 +155,9 @@ func cmdInstall(args []string) error {
 	if isLocal {
 		fmt.Println("Installing to local project directory (.fglpkg/)")
 		fmt.Println("  Tip: add .fglpkg/ to your .gitignore file")
+		if addingToNewProject {
+			fmt.Println("  Note: no fglpkg.json found — initialising the current directory as a new project.")
+		}
 	}
 
 	if flags.force {
@@ -271,6 +283,15 @@ func resolveHome(forceLocal, forceGlobal bool) (home string, isLocal bool, err e
 	}
 	h, err := fglpkgHome()
 	return h, false, err
+}
+
+// installImpliesNewProject reports whether the install invocation should be
+// treated as "create a new project in the current directory" — true when
+// the user passed at least one package name, didn't force either scope, and
+// the current directory isn't already a project. Pulled out of cmdInstall
+// for direct unit testing.
+func installImpliesNewProject(f installFlags, currentDirIsProject bool) bool {
+	return len(f.pkgs) > 0 && !f.local && !f.global && !currentDirIsProject
 }
 
 // isProjectDir returns true if the current directory looks like a project
@@ -490,24 +511,65 @@ func cmdEnv(args []string) error {
 // ─── search ───────────────────────────────────────────────────────────────────
 
 func cmdSearch(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: fglpkg search <term>")
-	}
-	results, err := registry.Search(args[0])
+	term, all, err := parseSearchArgs(args)
 	if err != nil {
+		return err
+	}
+
+	results, err := registry.Search(term)
+	if err != nil {
+		// Older registry servers reject an empty q with 400 — surface a
+		// clean hint instead of the raw transport error.
+		if all && strings.Contains(err.Error(), "HTTP 400") {
+			return fmt.Errorf("this registry doesn't support --all (returned HTTP 400)\n" +
+				"upgrade the registry, or pass a search term instead")
+		}
 		return fmt.Errorf("search failed: %w", err)
 	}
+
 	if len(results) == 0 {
-		fmt.Printf("No packages found matching %q\n", args[0])
+		if all {
+			fmt.Println("No packages in the registry.")
+		} else {
+			fmt.Printf("No packages found matching %q\n", term)
+		}
 		return nil
 	}
-	fmt.Printf("Results for %q:\n", args[0])
+	if all {
+		fmt.Printf("All packages (%d):\n", len(results))
+	} else {
+		fmt.Printf("Results for %q:\n", term)
+	}
 	fmt.Printf("  %-30s %-12s %s\n", "NAME", "VERSION", "DESCRIPTION")
 	fmt.Printf("  %-30s %-12s %s\n", "----", "-------", "-----------")
 	for _, r := range results {
 		fmt.Printf("  %-30s %-12s %s\n", r.Name, r.LatestVersion, r.Description)
 	}
 	return nil
+}
+
+// parseSearchArgs returns the keyword term plus an --all flag. Errors on
+// `search` with no args + no --all (the historical "missing keyword" error),
+// and on conflicting `search --all <term>`.
+func parseSearchArgs(args []string) (term string, all bool, err error) {
+	for _, a := range args {
+		switch a {
+		case "--all":
+			all = true
+		default:
+			if term != "" {
+				return "", false, fmt.Errorf("unexpected extra argument %q", a)
+			}
+			term = a
+		}
+	}
+	if all && term != "" {
+		return "", false, fmt.Errorf("--all and <term> are mutually exclusive")
+	}
+	if !all && term == "" {
+		return "", false, fmt.Errorf("usage: fglpkg search <term>   |   fglpkg search --all")
+	}
+	return term, all, nil
 }
 
 // ─── publish ──────────────────────────────────────────────────────────────────
@@ -534,7 +596,16 @@ func cmdPublish(args []string) error {
 	if err := m.ValidateForPublish(); err != nil {
 		return err
 	}
-	if err := checkVersionNotPublished(m); err != nil {
+	// Detect Genero before the publish check so the latter can reject only
+	// when the SAME variant (not just the same version string) is already
+	// published. Allows adding new Genero major variants to an existing
+	// version.
+	gv, err := genero.Detect()
+	if err != nil {
+		return fmt.Errorf("cannot detect Genero version: %w", err)
+	}
+	generoMajor := gv.MajorString()
+	if err := checkVariantNotPublished(m, generoMajor); err != nil {
 		return err
 	}
 	registryURL := defaultRegistry()
@@ -550,12 +621,6 @@ func cmdPublish(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	gv, err := genero.Detect()
-	if err != nil {
-		return fmt.Errorf("cannot detect Genero version: %w", err)
-	}
-	generoMajor := gv.MajorString()
 
 	if dryRun {
 		fmt.Printf("DRY RUN — no network calls will be made\n\n")
@@ -1937,7 +2002,7 @@ COMMANDS:
   update            Re-resolve and update all dependencies
   list              List installed packages
   env               Print environment variable exports
-  search <term>     Search the registry
+  search <term>     Search the registry (use --all to list every package)
   info <pkg>[@ver]  Show registry metadata for a package (--json for raw output)
   outdated          Show FGL deps with newer versions available (--json for JSON)
   audit             Check installed Java JARs for known vulnerabilities

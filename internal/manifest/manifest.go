@@ -16,6 +16,11 @@ const Filename = "fglpkg.json"
 
 // Manifest represents the fglpkg.json file for a package or project.
 type Manifest struct {
+	// Schema is the optional JSON Schema URL editors use for autocomplete
+	// (`"$schema": "https://.../fglpkg.schema.json"`). It is not validated
+	// or used by fglpkg itself; the field exists only so DisallowUnknownFields
+	// does not reject manifests that opt into editor tooling.
+	Schema           string            `json:"$schema,omitempty"`
 	Name             string            `json:"name"`
 	Version          string            `json:"version"`
 	Description      string            `json:"description,omitempty"`

@@ -370,11 +370,24 @@ func TestSearchNoResults(t *testing.T) {
 	}
 }
 
-func TestSearchMissingQuery(t *testing.T) {
+// TestSearchEmptyQueryListsAll covers the discovery path used by
+// `fglpkg search --all`: a missing or empty q returns every published
+// package. (Behaviour change from SUPNA-10506: previously returned 400.)
+func TestSearchEmptyQueryListsAll(t *testing.T) {
 	ts := newTestServer(t)
-	resp, _ := http.Get(ts.URL + "/search")
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", resp.StatusCode)
+	publish(t, ts, "json-utils", "1.0.0", map[string]any{"description": "JSON helpers"}, testToken)
+	publish(t, ts, "dbtools", "2.0.0", map[string]any{"description": "Database tools"}, testToken)
+	publish(t, ts, "netlib", "1.0.0", map[string]any{"description": "Network library"}, testToken)
+
+	for _, url := range []string{ts.URL + "/search", ts.URL + "/search?q="} {
+		var results []map[string]any
+		resp := getJSON(t, url, &results)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s status = %d, want 200", url, resp.StatusCode)
+		}
+		if len(results) != 3 {
+			t.Errorf("%s returned %d results, want 3", url, len(results))
+		}
 	}
 }
 

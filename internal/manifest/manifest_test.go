@@ -236,6 +236,40 @@ func TestSaveLoadWithBinAndDocs(t *testing.T) {
 	}
 }
 
+// TestLoadAcceptsSchemaField confirms `$schema` is tolerated by the strict
+// loader. Editors emit it for JSON Schema autocomplete; rejecting it would
+// force users to strip it before any fglpkg command would work.
+func TestLoadAcceptsSchemaField(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+		"$schema": "https://example.com/fglpkg.schema.json",
+		"name": "x",
+		"version": "1.0.0"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m, err := manifest.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m.Schema != "https://example.com/fglpkg.schema.json" {
+		t.Errorf("Schema = %q, want the example URL", m.Schema)
+	}
+
+	// Round-trip: Save then Load preserves it.
+	if err := m.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	m2, err := manifest.Load(dir)
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if m2.Schema != m.Schema {
+		t.Errorf("after round-trip Schema = %q, want %q", m2.Schema, m.Schema)
+	}
+}
+
 // ─── Strict parsing ──────────────────────────────────────────────────────────
 
 func TestLoadRejectsUnknownTopLevelField(t *testing.T) {

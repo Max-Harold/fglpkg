@@ -788,11 +788,10 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.optionalAuth(w, r); !ok {
 		return
 	}
+	// An empty / missing q intentionally returns every package — discovery
+	// for callers like `fglpkg search --all` that have no keyword to filter
+	// on. store.search("") matches every package (every string contains "").
 	term := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	if term == "" {
-		writeError(w, http.StatusBadRequest, "missing query parameter q")
-		return
-	}
 	writeJSON(w, http.StatusOK, h.store.search(term))
 }
 

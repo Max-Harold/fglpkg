@@ -242,7 +242,8 @@ fglpkg list                              # List installed packages
 fglpkg env                               # Print export statements (auto-detects scope)
 fglpkg env --global                      # Print exports for all global packages
 fglpkg env --gst                         # Print in Genero Studio format
-fglpkg search json                       # Search registry
+fglpkg search json                       # Search registry by keyword
+fglpkg search --all                      # List every package in the registry
 fglpkg bdl <pkg> <module> [args...]      # Run a BDL program from a package
 fglpkg bdl --list                        # List available BDL programs
 
