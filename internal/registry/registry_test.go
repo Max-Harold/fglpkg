@@ -77,6 +77,36 @@ func TestFetchInfoForGeneroPicksMatchingVariant(t *testing.T) {
 	}
 }
 
+// TestFetchInfoForGeneroResolvesRelativeDownloadURL verifies that a
+// site-relative download_url (what the registry actually returns) is made
+// absolute against the consumer base, so the installer's GET has a scheme +
+// host instead of failing with "unsupported protocol scheme".
+func TestFetchInfoForGeneroResolvesRelativeDownloadURL(t *testing.T) {
+	ts := newPackagesServer(t, map[string]any{
+		"slug": "qrcode",
+		"versions": []map[string]any{
+			{"version": "1.0.0", "artifacts": []map[string]any{
+				{"variant": "genero6", "sha256": "bb",
+					"download_url": "/registry/packages/qrcode/versions/1.0.0/artifacts/genero6"},
+			}},
+		},
+	}, nil)
+	defer ts.Close()
+	t.Setenv("FGLPKG_REGISTRY", ts.URL)
+
+	info, err := registry.FetchInfoForGenero("qrcode", "1.0.0", "6")
+	if err != nil {
+		t.Fatalf("FetchInfoForGenero: %v", err)
+	}
+	want := ts.URL + "/registry/packages/qrcode/versions/1.0.0/artifacts/genero6"
+	if info.DownloadURL != want {
+		t.Errorf("DownloadURL = %q, want %q", info.DownloadURL, want)
+	}
+	if len(info.Variants) != 1 || info.Variants[0].DownloadURL != want {
+		t.Errorf("Variants[0].DownloadURL = %+v, want %q", info.Variants, want)
+	}
+}
+
 func TestFetchInfoForGeneroFallsBackToDefault(t *testing.T) {
 	ts := newPackagesServer(t, map[string]any{
 		"slug": "demo-utils",

@@ -266,8 +266,14 @@ func (i *Installer) Install(info *registry.PackageInfo) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
+	// Normalize the download URL: the registry returns site-relative
+	// download URLs (and older lock files persisted them in that form), so
+	// resolve against the consumer base before the GET. No-op for URLs that
+	// already carry a scheme (GitHub assets, R2/CDN redirects).
+	downloadURL := registry.AbsoluteDownloadURL(info.DownloadURL)
+
 	// Download and verify in one streaming pass.
-	if err := downloadAndVerify(info.DownloadURL, info.Checksum, info.Name, tmp, i.githubToken, i.registryToken); err != nil {
+	if err := downloadAndVerify(downloadURL, info.Checksum, info.Name, tmp, i.githubToken, i.registryToken); err != nil {
 		tmp.Close()
 		return err
 	}

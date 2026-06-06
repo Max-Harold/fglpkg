@@ -179,17 +179,34 @@ func FetchInfoForGenero(name, version, generoMajor string) (*PackageInfo, error)
 		Description: d.Description,
 		Author:      d.Owner.Name,
 		PublishedAt: v.PublishedAt,
-		DownloadURL: art.DownloadURL,
+		DownloadURL: AbsoluteDownloadURL(art.DownloadURL),
 		Checksum:    art.SHA256,
 	}
 	for _, a := range v.Artifacts {
 		info.Variants = append(info.Variants, VariantInfo{
 			GeneroMajor: strings.TrimPrefix(a.Variant, "genero"),
-			DownloadURL: a.DownloadURL,
+			DownloadURL: AbsoluteDownloadURL(a.DownloadURL),
 			Checksum:    a.SHA256,
 		})
 	}
 	return info, nil
+}
+
+// AbsoluteDownloadURL turns a possibly site-relative download_url returned by
+// the registry (e.g. "/registry/packages/x/versions/1.0.0/artifacts/genero6")
+// into an absolute URL against the consumer base, so an HTTP GET has a scheme
+// + host. Already-absolute URLs (an R2/CDN redirect target that carries its
+// own scheme) are returned unchanged. Idempotent — safe to call on a URL that
+// is already absolute, which is how the installer normalizes URLs read from an
+// older lock file that persisted the relative form.
+func AbsoluteDownloadURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return raw
+	}
+	return consumerBase() + "/" + strings.TrimPrefix(raw, "/")
 }
 
 // Resolve fetches the best matching version of name for the given constraint.
