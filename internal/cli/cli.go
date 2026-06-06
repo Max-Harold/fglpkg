@@ -697,14 +697,14 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 	// Collect the rich per-version metadata pushed on version-create:
 	// repository/author/license/genero + production dependencies from the
 	// manifest, plus the root-level README / USERGUIDE markdown bodies.
-	// Docs are read from the same root as the zip; absent docs are not an
-	// error. This metadata is sent on create-version only — when a 409
-	// (version exists) sends us into the add-a-variant path below, it is
-	// deliberately not resent (the registry stores it once, at create).
-	docRoot := m.Root
-	if docRoot == "" {
-		docRoot = "."
-	}
+	// Docs live at the PROJECT root (next to fglpkg.json), NOT under m.Root —
+	// m.Root is the package *source* base (e.g. "com/fourjs/odatalib") that
+	// holds the .4gl/.per files, while README.md / USERGUIDE.md sit at the
+	// project dir. publish always runs from the project dir, so scan ".".
+	// Absent docs are not an error. This metadata is sent on create-version
+	// only — when a 409 (version exists) sends us into the add-a-variant path
+	// below, it is deliberately not resent (the registry stores it once).
+	const docRoot = "."
 	readme, err := collectReadme(docRoot)
 	if err != nil {
 		return err
