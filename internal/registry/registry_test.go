@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 )
 
@@ -202,6 +203,87 @@ func TestTryRefreshTriggeredOn401(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("server saw %d requests, want 2 (initial + retry after refresh)", calls)
+	}
+}
+
+// TestPublishCreateVersionSendsMetadata verifies the rich per-version
+// metadata (repository/author/license/genero/dependencies/readme/userguide)
+// is marshalled into the create-version payload with the shapes the registry
+// expects — in particular dependencies as {fgl:{...}, java:[{...}]}.
+func TestPublishCreateVersionSendsMetadata(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer ts.Close()
+	t.Setenv("FGLPKG_PUBLISH_REGISTRY", ts.URL)
+
+	meta := registry.VersionMeta{
+		Repository: "https://github.com/acme/demo",
+		Author:     "Acme <dev@acme.com>",
+		License:    "MIT",
+		Genero:     "^6.0.0",
+		Dependencies: manifest.Dependencies{
+			FGL:  map[string]string{"json-path": "^1.0.0"},
+			Java: []manifest.JavaDependency{{GroupID: "com.acme", ArtifactID: "x", Version: "1.2.3"}},
+		},
+		Readme:    "# Demo",
+		Userguide: "## Guide",
+	}
+	if err := registry.PublishCreateVersion("demo", "1.2.0", "", nil, meta); err != nil {
+		t.Fatalf("PublishCreateVersion: %v", err)
+	}
+
+	for k, want := range map[string]string{
+		"version":    "1.2.0",
+		"repository": "https://github.com/acme/demo",
+		"author":     "Acme <dev@acme.com>",
+		"license":    "MIT",
+		"genero":     "^6.0.0",
+		"readme":     "# Demo",
+		"userguide":  "## Guide",
+	} {
+		if got, _ := gotBody[k].(string); got != want {
+			t.Errorf("body[%q] = %q, want %q", k, got, want)
+		}
+	}
+
+	deps, ok := gotBody["dependencies"].(map[string]any)
+	if !ok {
+		t.Fatalf("dependencies not an object: %T", gotBody["dependencies"])
+	}
+	if fgl, _ := deps["fgl"].(map[string]any); fgl["json-path"] != "^1.0.0" {
+		t.Errorf("dependencies.fgl[json-path] = %v, want ^1.0.0", fgl["json-path"])
+	}
+	java, _ := deps["java"].([]any)
+	if len(java) != 1 {
+		t.Fatalf("dependencies.java len = %d, want 1", len(java))
+	}
+	if j0, _ := java[0].(map[string]any); j0["groupId"] != "com.acme" || j0["artifactId"] != "x" || j0["version"] != "1.2.3" {
+		t.Errorf("java[0] = %v, want {com.acme x 1.2.3}", java[0])
+	}
+}
+
+// TestPublishCreateVersionOmitsEmptyMetadata verifies an empty VersionMeta
+// adds no metadata keys to the payload, keeping older registries and the
+// no-docs case unaffected.
+func TestPublishCreateVersionOmitsEmptyMetadata(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer ts.Close()
+	t.Setenv("FGLPKG_PUBLISH_REGISTRY", ts.URL)
+
+	if err := registry.PublishCreateVersion("demo", "1.0.0", "", nil, registry.VersionMeta{}); err != nil {
+		t.Fatalf("PublishCreateVersion: %v", err)
+	}
+	for _, k := range []string{"repository", "author", "license", "genero", "dependencies", "readme", "userguide"} {
+		if _, present := gotBody[k]; present {
+			t.Errorf("empty metadata should omit %q from the payload, but it was present", k)
+		}
 	}
 }
 

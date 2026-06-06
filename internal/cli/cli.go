@@ -668,9 +668,12 @@ func cmdPublish(args []string) error {
 //  1. Build the zip locally and SHA256 it (for the dry-run preview).
 //  2. POST /registry/packages — creates the slug; 409 means "already exists"
 //     which is fine.
-//  3. POST /registry/packages/:slug/versions — creates the version. 409 means
-//     the version already exists but a different variant. The publish proceeds
-//     to step 4 to add this variant.
+//  3. POST /registry/packages/:slug/versions — creates the version, carrying
+//     the rich metadata (repository/author/license/genero/dependencies +
+//     README/USERGUIDE) from the manifest and root doc files. 409 means the
+//     version already exists for a different variant; the publish proceeds to
+//     step 4 to add this variant and does NOT resend the metadata (the
+//     registry stores it once, at first create).
 //  4. PUT /registry/packages/:slug/versions/:version/artifacts/:variant —
 //     streams the zip body. Server computes size + sha256 and stores in R2.
 //  5. POST /registry/packages/:slug/versions/:version/submit — marks the
@@ -691,12 +694,50 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 		visibility = "public"
 	}
 
+	// Collect the rich per-version metadata pushed on version-create:
+	// repository/author/license/genero + production dependencies from the
+	// manifest, plus the root-level README / USERGUIDE markdown bodies.
+	// Docs are read from the same root as the zip; absent docs are not an
+	// error. This metadata is sent on create-version only — when a 409
+	// (version exists) sends us into the add-a-variant path below, it is
+	// deliberately not resent (the registry stores it once, at create).
+	docRoot := m.Root
+	if docRoot == "" {
+		docRoot = "."
+	}
+	readme, err := collectReadme(docRoot)
+	if err != nil {
+		return err
+	}
+	userguide, err := collectUserguide(docRoot)
+	if err != nil {
+		return err
+	}
+	meta := registry.VersionMeta{
+		Repository:   m.Repository,
+		Author:       m.Author,
+		License:      m.License,
+		Genero:       m.GeneroConstraint,
+		Dependencies: m.Dependencies,
+		Readme:       readme,
+		Userguide:    userguide,
+	}
+
 	if dryRun {
 		fmt.Printf("  [dry-run] would POST   %s/registry/packages\n", registryURL)
 		fmt.Printf("            body: {slug:%q, name:%q, description:%q, visibility:%q}\n",
 			slug, m.Name, m.Description, visibility)
 		fmt.Printf("  [dry-run] would POST   %s/registry/packages/%s/versions\n", registryURL, slug)
 		fmt.Printf("            body: {version:%q, changelog:\"\"}\n", m.Version)
+		fmt.Printf("            metadata:\n")
+		fmt.Printf("              repository:   %s\n", dryRunScalar(meta.Repository))
+		fmt.Printf("              author:       %s\n", dryRunScalar(meta.Author))
+		fmt.Printf("              license:      %s\n", dryRunScalar(meta.License))
+		fmt.Printf("              genero:       %s\n", dryRunScalar(meta.Genero))
+		fmt.Printf("              dependencies: %d fgl, %d java\n",
+			len(meta.Dependencies.FGL), len(meta.Dependencies.Java))
+		fmt.Printf("              readme:       %s\n", docSizeLabel(readme, readmeTruncationMarker))
+		fmt.Printf("              userguide:    %s\n", docSizeLabel(userguide, userguideTruncationMarker))
 		fmt.Printf("  [dry-run] would PUT    %s/registry/packages/%s/versions/%s/artifacts/%s?filename=%s\n",
 			registryURL, slug, m.Version, variant, filename)
 		fmt.Printf("            body: <%d bytes zip>\n", len(zipData))
@@ -714,7 +755,7 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 	// 3. Create version. 409 (already exists) is fine — caller is adding
 	//    a new variant to an existing version.
 	fmt.Println("  → POST   /registry/packages/" + slug + "/versions")
-	if err := registry.PublishCreateVersion(slug, m.Version, "", nil); err != nil {
+	if err := registry.PublishCreateVersion(slug, m.Version, "", nil, meta); err != nil {
 		if !errors.Is(err, registry.ErrVersionExists) {
 			return err
 		}
@@ -731,6 +772,29 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 	// 5. Submit for review.
 	fmt.Println("  → POST   /registry/packages/" + slug + "/versions/" + m.Version + "/submit")
 	return registry.PublishSubmit(slug, m.Version)
+}
+
+// dryRunScalar renders an optional scalar metadata field for the dry-run
+// preview, showing "(none)" rather than an empty line when it is unset.
+func dryRunScalar(v string) string {
+	if v == "" {
+		return "(none)"
+	}
+	return v
+}
+
+// docSizeLabel renders a README/USERGUIDE body for the dry-run preview as a
+// human size, "(none)" when empty, and flags "(truncated)" when the cap
+// marker was appended.
+func docSizeLabel(content, marker string) string {
+	if content == "" {
+		return "(none)"
+	}
+	label := fmt.Sprintf("%.1f KB", float64(len(content))/1024)
+	if strings.HasSuffix(content, marker) {
+		label += " (truncated)"
+	}
+	return label
 }
 
 func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {

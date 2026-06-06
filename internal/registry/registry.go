@@ -272,13 +272,51 @@ func PublishCreatePackage(slug, name, description, visibility string) error {
 // new variant against an existing version.
 var ErrVersionExists = errors.New("version already exists")
 
-func PublishCreateVersion(slug, version, changelog string, tags map[string][]string) error {
+// VersionMeta carries the optional rich metadata pushed alongside a new
+// version on create — repository, author, license, genero constraint,
+// production dependencies, and the README / USERGUIDE markdown bodies. All
+// fields are optional; empty ones are omitted from the payload and the
+// registry defaults them, so older registries (and the empty case) are
+// unaffected. The registry stores this at version-create time only; it is
+// never mutated by the artifact upload or a re-submit.
+type VersionMeta struct {
+	Repository   string
+	Author       string
+	License      string
+	Genero       string
+	Dependencies manifest.Dependencies
+	Readme       string
+	Userguide    string
+}
+
+func PublishCreateVersion(slug, version, changelog string, tags map[string][]string, meta VersionMeta) error {
 	payload := map[string]any{
 		"version":   version,
 		"changelog": changelog,
 	}
 	if len(tags) > 0 {
 		payload["tags"] = tags
+	}
+	if meta.Repository != "" {
+		payload["repository"] = meta.Repository
+	}
+	if meta.Author != "" {
+		payload["author"] = meta.Author
+	}
+	if meta.License != "" {
+		payload["license"] = meta.License
+	}
+	if meta.Genero != "" {
+		payload["genero"] = meta.Genero
+	}
+	if len(meta.Dependencies.FGL) > 0 || len(meta.Dependencies.Java) > 0 {
+		payload["dependencies"] = meta.Dependencies
+	}
+	if meta.Readme != "" {
+		payload["readme"] = meta.Readme
+	}
+	if meta.Userguide != "" {
+		payload["userguide"] = meta.Userguide
 	}
 	body, _ := json.Marshal(payload)
 	status, respBody, err := publishJSON(http.MethodPost,

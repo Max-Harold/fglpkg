@@ -107,6 +107,93 @@ func TestCollectReadmeIgnoresDirectories(t *testing.T) {
 	}
 }
 
+// TestCollectUserguideMissing verifies an absent USERGUIDE produces
+// ("", nil) — publishing without one is allowed.
+func TestCollectUserguideMissing(t *testing.T) {
+	dir := t.TempDir()
+	got, err := collectUserguide(dir)
+	if err != nil {
+		t.Fatalf("collectUserguide on empty dir: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty string", got)
+	}
+}
+
+// TestCollectUserguidePrefersMarkdown verifies USERGUIDE.md wins over
+// USERGUIDE.txt (earlier in userguideCandidates).
+func TestCollectUserguidePrefersMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, dir, "USERGUIDE.md", "from md")
+	mustWrite(t, dir, "USERGUIDE.txt", "from txt")
+
+	got, err := collectUserguide(dir)
+	if err != nil {
+		t.Fatalf("collectUserguide: %v", err)
+	}
+	if got != "from md" {
+		t.Errorf("got %q, want %q (markdown should win)", got, "from md")
+	}
+}
+
+// TestCollectUserguideCaseInsensitive verifies a lower-cased
+// `userguide.md` is found despite the candidate list being all-caps.
+func TestCollectUserguideCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, dir, "userguide.md", "lower case")
+
+	got, err := collectUserguide(dir)
+	if err != nil {
+		t.Fatalf("collectUserguide: %v", err)
+	}
+	if got != "lower case" {
+		t.Errorf("got %q, want %q", got, "lower case")
+	}
+}
+
+// TestCollectUserguideTruncates verifies USERGUIDEs over the cap are
+// truncated and end with the USERGUIDE marker (not the README one).
+func TestCollectUserguideTruncates(t *testing.T) {
+	dir := t.TempDir()
+	huge := strings.Repeat("a", maxReadmeBytes+100)
+	mustWrite(t, dir, "USERGUIDE.md", huge)
+
+	got, err := collectUserguide(dir)
+	if err != nil {
+		t.Fatalf("collectUserguide: %v", err)
+	}
+	if !strings.HasSuffix(got, userguideTruncationMarker) {
+		t.Errorf("output did not end with USERGUIDE truncation marker")
+	}
+	wantLen := maxReadmeBytes + len(userguideTruncationMarker)
+	if len(got) != wantLen {
+		t.Errorf("len(got) = %d, want %d", len(got), wantLen)
+	}
+}
+
+// TestCollectReadmeAndUserguideAreIndependent verifies the two collectors
+// don't pick up each other's files.
+func TestCollectReadmeAndUserguideAreIndependent(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, dir, "README.md", "the readme")
+	mustWrite(t, dir, "USERGUIDE.md", "the userguide")
+
+	readme, err := collectReadme(dir)
+	if err != nil {
+		t.Fatalf("collectReadme: %v", err)
+	}
+	guide, err := collectUserguide(dir)
+	if err != nil {
+		t.Fatalf("collectUserguide: %v", err)
+	}
+	if readme != "the readme" {
+		t.Errorf("readme = %q, want %q", readme, "the readme")
+	}
+	if guide != "the userguide" {
+		t.Errorf("userguide = %q, want %q", guide, "the userguide")
+	}
+}
+
 func mustWrite(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {

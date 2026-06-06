@@ -304,7 +304,17 @@ fglpkg version                           # Print version and build info
 fglpkg help                              # Show help
 ```
 
-## Running the Registry Server
+## Legacy registry server
+
+> The consumer commands (`install`, `search`, `info`, `outdated`, `whoami`,
+> `login`, `publish`) talk to the Genero Intelligence registry over the
+> `/registry/*` protocol — see [Publishing a Package](#publishing-a-package).
+> The standalone server below is the **legacy** flat-file registry
+> (`cmd/registry`, deployed at `fglpkg-registry.fly.dev`). The admin commands
+> `unpublish`, `owner`, `token` and `config` still operate against it (overridable
+> with `FGLPKG_PUBLISH_REGISTRY`) until the Genero Intelligence registry exposes
+> equivalent endpoints. The API and storage layout documented here apply to this
+> legacy server only.
 
 ```bash
 # Build the registry binary
@@ -346,70 +356,63 @@ export FGLPKG_REGISTRY=https://registry.example.com
 
 ### Publishing a Package
 
-Package zips are stored as GitHub Release assets on a private repository. The registry server on Fly.io stores only metadata (no zip files).
-
-First, an admin configures the GitHub repo on the registry (one-time setup):
-
-```bash
-fglpkg config github-repos add 4js-mikefolcher/fglpkg-packages
-```
-
-Then any authenticated user can publish:
+`publish` talks the Genero Intelligence registry protocol (paths under
+`/registry/...`) at `FGLPKG_REGISTRY` (default `https://service.generointelligence.ai`).
+The registry stores artifact zips itself (in R2) — there is no GitHub-Releases
+indirection and no per-repo setup. Any authenticated user can publish:
 
 ```bash
-# Log in (prompts for both registry token and GitHub token)
+# Log in once (OAuth in the browser, or a PAT for CI — see Authentication above)
 fglpkg login
 
-# Publish
+# From the package directory
 fglpkg publish
+fglpkg publish --dry-run    # preview the calls without touching the network
 ```
 
-The CLI automatically fetches the GitHub repo from the registry config. You can override it with `FGLPKG_GITHUB_REPO` if needed.
+Publishing is **additive and reviewed**: a freshly published version is marked
+*pending* and only becomes installable once a registry admin approves it.
 
 The publish flow:
-1. Builds a zip from the directory specified by `root` (or `.`), collecting files matching `files` patterns (default: `*.42m`, `*.42f`, `*.sch`)
-2. Uploads the zip as a GitHub Release asset to the private packages repo
-3. Registers metadata (description, checksum, download URL, dependencies) with the registry
+1. Builds a zip from the directory specified by `root` (or `.`), collecting files matching `files` patterns (default: `*.42m`, `*.42f`, `*.sch`) plus any declared `bin` scripts and `docs`, and SHA256s it.
+2. `POST /registry/packages` — creates the package slug on first publish (a `409` means it already exists, which is fine). New packages carry the manifest's `visibility` field (`public` | `private`, default `public`).
+3. `POST /registry/packages/:slug/versions` — creates the version (a `409` means the version already exists; publish proceeds to add a new variant to it).
+4. `PUT /registry/packages/:slug/versions/:version/artifacts/:variant` — streams the zip body; the registry computes size + checksum and stores it in R2.
+5. `POST /registry/packages/:slug/versions/:version/submit` — marks the version pending for admin review.
 
-**GitHub token requirements:**
-- Publishers need a fine-grained PAT with **Contents: Read and write** on the packages repo
-- Consumers (installers) need a fine-grained PAT with **Contents: Read** on the packages repo
+Authentication uses the same OAuth/PAT bearer as the other consumer commands
+(`FGLPKG_TOKEN` overrides stored credentials). No GitHub token is involved in
+publishing.
 
 ### Genero Version Variants
 
-Each package version can have multiple builds, one per Genero major version. When you publish, fglpkg detects your local Genero version and tags the upload as a variant:
+Each package version can have multiple builds, one per Genero major version. When you publish, fglpkg detects your local Genero version and uploads it as a named variant:
 
 ```bash
 # On a Genero 4.x machine
-fglpkg publish    # uploads poiapi-1.0.0-genero4.zip
+fglpkg publish    # uploads the genero4 variant (poiapi-1.0.0-genero4.zip)
 
 # On a Genero 6.x machine
-fglpkg publish    # uploads poiapi-1.0.0-genero6.zip
+fglpkg publish    # uploads the genero6 variant (poiapi-1.0.0-genero6.zip)
 ```
 
-Both variants live under the same release (`poiapi-v1.0.0`) as separate assets. When a consumer runs `fglpkg install`, the resolver automatically selects the variant matching their local Genero major version.
+Both variants live under the same version (`1.0.0`) as separate artifacts on the
+registry. Publishing a second variant for an existing version is allowed and does
+not require bumping the version. When a consumer runs `fglpkg install`, the
+resolver automatically selects the variant matching their local Genero major
+version.
 
-### Registry Storage Layout
+### Registry Storage
 
-The registry server stores only metadata. Package zips are hosted on GitHub Releases.
+The Genero Intelligence registry persists package and version metadata in its own
+database and stores artifact zips in object storage (R2); it never unzips an
+artifact. fglpkg interacts with it purely over the `/registry/*` HTTP API above —
+there is no client-visible on-disk layout.
 
-```
-/var/lib/fglpkg-registry/
-├── index.json                  # global package catalogue
-├── config.json                 # registry configuration (GitHub repos)
-├── auth.json                   # user tokens and ownership
-└── packages/
-    └── myutils/
-        └── meta.json           # all version records + variant info
-```
-
-Package zips are stored as GitHub Release assets:
-
-```
-GitHub Release: myutils-v1.0.0
-├── myutils-1.0.0-genero4.zip  # variant for Genero 4.x
-└── myutils-1.0.0-genero6.zip  # variant for Genero 6.x
-```
+The legacy flat-file storage layout (`index.json`, `config.json`, `auth.json`,
+per-package `meta.json`) belongs to the bundled standalone server described under
+[Legacy registry server](#legacy-registry-server) below, not the Genero
+Intelligence registry.
 
 ## Releases
 
