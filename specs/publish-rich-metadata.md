@@ -194,5 +194,11 @@ Show `(none)` for an absent README/USERGUIDE and `(truncated)` when the cap was 
 
 ## Rollout
 
-1. Land the registry 512 KB cap change first (companion alignment doc).
-2. Land this fglpkg change; from then on new publishes populate the metadata.
+1. ~~Land the registry 512 KB cap change first (companion alignment doc).~~
+   **Done** — the registry now caps README/USERGUIDE at 512 KB, so the
+   client's 256 KB-plus-truncation-marker payload is accepted.
+2. ~~Land this fglpkg change; from then on new publishes populate the metadata.~~
+   **Done** — shipped in v2.x; `publish` sends repository/author/license/genero/
+   dependencies + README/USERGUIDE on version-create.
+
+Status: **complete on both sides.**
