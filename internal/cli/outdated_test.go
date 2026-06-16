@@ -36,20 +36,32 @@ func TestNewestAndNewestStable(t *testing.T) {
 }
 
 // outdatedStub serves a single package named "demo" with three versions
-// and a non-existent package.
+// via the new consumer protocol (/registry/packages/<slug>).
 func outdatedStub(t *testing.T) *httptest.Server {
-	versions := map[string]any{
-		"name":     "demo",
-		"versions": []string{"1.0.0", "1.2.0", "2.0.0"},
+	t.Helper()
+	detail := map[string]any{
+		"slug": "demo",
+		"name": "demo",
+		"versions": []map[string]any{
+			{"version": "1.0.0", "artifacts": []map[string]any{
+				{"variant": "default", "sha256": "a", "download_url": "https://example.com/demo-1.0.0.zip"},
+			}},
+			{"version": "1.2.0", "artifacts": []map[string]any{
+				{"variant": "default", "sha256": "b", "download_url": "https://example.com/demo-1.2.0.zip"},
+			}},
+			{"version": "2.0.0", "artifacts": []map[string]any{
+				{"variant": "default", "sha256": "c", "download_url": "https://example.com/demo-2.0.0.zip"},
+			}},
+		},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/packages/", func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/packages/"), "/")
-		if len(parts) == 2 && parts[0] == "demo" && parts[1] == "versions" {
-			_ = json.NewEncoder(w).Encode(versions)
+	mux.HandleFunc("/registry/packages/", func(w http.ResponseWriter, r *http.Request) {
+		slug := strings.TrimPrefix(r.URL.Path, "/registry/packages/")
+		if slug != "demo" {
+			http.NotFound(w, r)
 			return
 		}
-		http.NotFound(w, r)
+		_ = json.NewEncoder(w).Encode(detail)
 	})
 	return httptest.NewServer(mux)
 }

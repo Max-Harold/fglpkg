@@ -27,20 +27,27 @@ type InstalledPackage struct {
 
 // Installer manages package installation into the fglpkg home directory.
 type Installer struct {
-	home        string // e.g. ~/.fglpkg
-	packagesDir string // ~/.fglpkg/packages
-	jarsDir     string // ~/.fglpkg/jars
-	githubToken string // GitHub PAT for downloading from private repos
+	home          string // e.g. ~/.fglpkg
+	packagesDir   string // ~/.fglpkg/packages
+	jarsDir       string // ~/.fglpkg/jars
+	githubToken   string // GitHub PAT for downloading from private GitHub Releases
+	registryToken string // bearer for the consumer registry when it serves zips directly
 }
 
-// New creates an Installer rooted at home. The githubToken is used to
-// authenticate downloads from private GitHub repos; pass "" if not needed.
-func New(home, githubToken string) *Installer {
+// New creates an Installer rooted at home.
+//
+//   - githubToken: authenticates downloads from private GitHub Releases
+//     (used by the legacy fglpkg-registry.fly.dev flow). Pass "" if not needed.
+//   - registryToken: bearer for non-GitHub download URLs (the new
+//     service.generointelligence.ai flow serves zips itself, possibly
+//     behind auth). Pass "" for anonymous fetches.
+func New(home, githubToken, registryToken string) *Installer {
 	return &Installer{
-		home:        home,
-		packagesDir: filepath.Join(home, "packages"),
-		jarsDir:     filepath.Join(home, "jars"),
-		githubToken: githubToken,
+		home:          home,
+		packagesDir:   filepath.Join(home, "packages"),
+		jarsDir:       filepath.Join(home, "jars"),
+		githubToken:   githubToken,
+		registryToken: registryToken,
 	}
 }
 
@@ -259,8 +266,14 @@ func (i *Installer) Install(info *registry.PackageInfo) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
+	// Normalize the download URL: the registry returns site-relative
+	// download URLs (and older lock files persisted them in that form), so
+	// resolve against the consumer base before the GET. No-op for URLs that
+	// already carry a scheme (GitHub assets, R2/CDN redirects).
+	downloadURL := registry.AbsoluteDownloadURL(info.DownloadURL)
+
 	// Download and verify in one streaming pass.
-	if err := downloadAndVerify(info.DownloadURL, info.Checksum, info.Name, tmp, i.githubToken); err != nil {
+	if err := downloadAndVerify(downloadURL, info.Checksum, info.Name, tmp, i.githubToken, i.registryToken); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -307,7 +320,7 @@ func (i *Installer) InstallJar(dep manifest.JavaDependency) error {
 	url := dep.MavenURL()
 
 	// JavaDependency doesn't carry a checksum field today; pass "" to skip.
-	if err := downloadAndVerify(url, dep.Checksum, dep.JarFileName(), f, ""); err != nil {
+	if err := downloadAndVerify(url, dep.Checksum, dep.JarFileName(), f, "", ""); err != nil {
 		f.Close()
 		os.Remove(dest)
 		return err
@@ -358,16 +371,30 @@ func (i *Installer) JarsDir() string { return i.jarsDir }
 
 // downloadAndVerify fetches url, streams the body through a DigestingReader
 // into w, and verifies the SHA256 against expectedChecksum in a single pass.
-// name is used only in error messages. If authToken is non-empty and the URL
-// points to the GitHub API, authentication headers are added for private repos.
-func downloadAndVerify(url, expectedChecksum, name string, w io.Writer, authToken string) error {
+// name is used only in error messages.
+//
+// Auth selection:
+//   - GitHub URL + githubToken non-empty → send githubToken (legacy private
+//     GitHub Releases path used by fglpkg-registry.fly.dev).
+//   - Non-GitHub URL + registryToken non-empty → send registryToken (new
+//     service.generointelligence.ai path where the registry serves zips).
+//   - Otherwise → no auth (anonymous public download).
+func downloadAndVerify(url, expectedChecksum, name string, w io.Writer, githubToken, registryToken string) error {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("download failed for %s: %w", name, err)
 	}
-	if authToken != "" && gh.IsGitHubURL(url) {
+
+	isGH := gh.IsGitHubURL(url)
+	authToken := ""
+	switch {
+	case isGH && githubToken != "":
+		authToken = githubToken
 		req.Header.Set("Authorization", "Bearer "+authToken)
 		req.Header.Set("Accept", "application/octet-stream")
+	case !isGH && registryToken != "":
+		authToken = registryToken
+		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
 
 	// Use a custom client for GitHub API downloads. GitHub redirects asset
@@ -375,7 +402,7 @@ func downloadAndVerify(url, expectedChecksum, name string, w io.Writer, authToke
 	// and Go's default client strips the Authorization header on cross-host
 	// redirects. We need to preserve the token through the redirect chain.
 	client := http.DefaultClient
-	if authToken != "" && gh.IsGitHubURL(url) {
+	if isGH && authToken != "" {
 		client = &http.Client{
 			CheckRedirect: func(r *http.Request, via []*http.Request) error {
 				if len(via) > 10 {

@@ -1,11 +1,15 @@
 package credentials_test
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/4js-mikefolcher/fglpkg/internal/credentials"
+	"github.com/4js-mikefolcher/fglpkg/internal/oauth"
 )
 
 const (
@@ -32,8 +36,8 @@ func TestSetAndGet(t *testing.T) {
 	if !ok {
 		t.Fatal("Get returned false after Set")
 	}
-	if e.Token != testToken {
-		t.Errorf("token = %q, want %q", e.Token, testToken)
+	if e.Pat != testToken {
+		t.Errorf("Pat = %q, want %q", e.Pat, testToken)
 	}
 	if e.Username != "alice" {
 		t.Errorf("username = %q, want %q", e.Username, "alice")
@@ -59,8 +63,8 @@ func TestSaveAndLoad(t *testing.T) {
 	if !ok {
 		t.Fatal("Get returned false after save/load round-trip")
 	}
-	if e.Token != testToken {
-		t.Errorf("token = %q, want %q", e.Token, testToken)
+	if e.Pat != testToken {
+		t.Errorf("Pat = %q, want %q", e.Pat, testToken)
 	}
 }
 
@@ -96,17 +100,92 @@ func TestURLNormalisation(t *testing.T) {
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
 
-	// Set with trailing slash + uppercase.
 	f.Set("https://Registry.Example.com/", testToken, "bob")
 
-	// Get without trailing slash + lowercase — should still find it.
-	_, ok := f.Get("https://registry.example.com")
-	if !ok {
+	if _, ok := f.Get("https://registry.example.com"); !ok {
 		t.Error("URL normalisation failed: Get with different casing/trailing slash returned false")
 	}
 }
 
+// ─── Legacy `token` field migration ──────────────────────────────────────────
+
+func TestLegacyTokenMigratesToPat(t *testing.T) {
+	home := t.TempDir()
+	legacy := `{
+	  "registries": {
+	    "https://legacy.example.com": {
+	      "token": "old-pat",
+	      "username": "alice",
+	      "savedAt": "2025-01-01T00:00:00Z"
+	    }
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(home, "credentials.json"), []byte(legacy), 0600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	f, err := credentials.Load(home)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e, ok := f.Get("https://legacy.example.com")
+	if !ok {
+		t.Fatal("entry missing after load")
+	}
+	if e.Pat != "old-pat" {
+		t.Errorf("Pat = %q, want old-pat", e.Pat)
+	}
+	if e.Token != "" {
+		t.Errorf("Token should be cleared in memory, got %q", e.Token)
+	}
+
+	// Persisted shape must omit `token`.
+	if err := f.Save(home); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(home, "credentials.json"))
+	var on struct {
+		Registries map[string]map[string]any `json:"registries"`
+	}
+	if err := json.Unmarshal(raw, &on); err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	entry := on.Registries["https://legacy.example.com"]
+	if _, hasToken := entry["token"]; hasToken {
+		t.Error("Save still wrote `token` field — should be omitted after migration")
+	}
+	if entry["pat"] != "old-pat" {
+		t.Errorf("pat field = %v, want old-pat", entry["pat"])
+	}
+}
+
+// ─── Env var resolution ──────────────────────────────────────────────────────
+
+func TestConsumerEnvBearerPrecedence(t *testing.T) {
+	t.Setenv("FGLPKG_TOKEN", "consumer-tok")
+	t.Setenv("FGLPKG_PUBLISH_TOKEN", "publish-tok")
+	if got := credentials.ConsumerEnvBearer(); got != "consumer-tok" {
+		t.Errorf("ConsumerEnvBearer = %q, want consumer-tok (FGLPKG_TOKEN must win)", got)
+	}
+}
+
+func TestConsumerEnvBearerFallsBack(t *testing.T) {
+	os.Unsetenv("FGLPKG_TOKEN")
+	t.Setenv("FGLPKG_PUBLISH_TOKEN", "publish-tok")
+	if got := credentials.ConsumerEnvBearer(); got != "publish-tok" {
+		t.Errorf("ConsumerEnvBearer = %q, want publish-tok fallback", got)
+	}
+}
+
+func TestPublisherEnvBearerIgnoresFglpkgToken(t *testing.T) {
+	t.Setenv("FGLPKG_TOKEN", "consumer-tok")
+	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	if got := credentials.PublisherEnvBearer(); got != "" {
+		t.Errorf("PublisherEnvBearer = %q, want empty (FGLPKG_TOKEN must NOT apply to publisher)", got)
+	}
+}
+
 func TestTokenForEnvVarOverride(t *testing.T) {
+	os.Unsetenv("FGLPKG_TOKEN")
 	t.Setenv("FGLPKG_PUBLISH_TOKEN", "env-token")
 	tok := credentials.TokenFor(t.TempDir(), registryURL)
 	if tok != "env-token" {
@@ -116,6 +195,7 @@ func TestTokenForEnvVarOverride(t *testing.T) {
 
 func TestTokenForCredentialsFile(t *testing.T) {
 	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	os.Unsetenv("FGLPKG_TOKEN")
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
 	f.Set(registryURL, testToken, "alice")
@@ -129,8 +209,162 @@ func TestTokenForCredentialsFile(t *testing.T) {
 
 func TestTokenForNotFound(t *testing.T) {
 	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	os.Unsetenv("FGLPKG_TOKEN")
 	tok := credentials.TokenFor(t.TempDir(), registryURL)
 	if tok != "" {
 		t.Errorf("TokenFor = %q, want empty", tok)
+	}
+}
+
+// ─── ActiveBearer ────────────────────────────────────────────────────────────
+
+func TestActiveBearerEnvWins(t *testing.T) {
+	t.Setenv("FGLPKG_TOKEN", "env-bearer")
+	// Stored OAuth + PAT should be irrelevant when env is set.
+	home := t.TempDir()
+	f, _ := credentials.Load(home)
+	f.SetOAuth(registryURL, oauth.Tokens{
+		AccessToken: "stored-oauth",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    "c",
+	}, "alice")
+	f.Save(home) //nolint:errcheck
+
+	tok, err := credentials.ActiveBearer(context.Background(), home, registryURL, nil)
+	if err != nil {
+		t.Fatalf("ActiveBearer: %v", err)
+	}
+	if tok != "env-bearer" {
+		t.Errorf("ActiveBearer = %q, want env-bearer", tok)
+	}
+}
+
+func TestActiveBearerOAuthUnexpired(t *testing.T) {
+	os.Unsetenv("FGLPKG_TOKEN")
+	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	home := t.TempDir()
+	f, _ := credentials.Load(home)
+	f.SetOAuth(registryURL, oauth.Tokens{
+		AccessToken: "stored-oauth",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    "c",
+	}, "alice")
+	f.Save(home) //nolint:errcheck
+
+	tok, err := credentials.ActiveBearer(context.Background(), home, registryURL, nil)
+	if err != nil {
+		t.Fatalf("ActiveBearer: %v", err)
+	}
+	if tok != "stored-oauth" {
+		t.Errorf("ActiveBearer = %q, want stored-oauth", tok)
+	}
+}
+
+func TestActiveBearerRefreshesAndPersists(t *testing.T) {
+	os.Unsetenv("FGLPKG_TOKEN")
+	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	home := t.TempDir()
+	f, _ := credentials.Load(home)
+	f.SetOAuth(registryURL, oauth.Tokens{
+		AccessToken:  "expired",
+		RefreshToken: "ref-1",
+		ExpiresAt:    time.Now().Add(-time.Minute),
+		ClientID:     "c",
+	}, "alice")
+	f.Save(home) //nolint:errcheck
+
+	called := false
+	refresh := func(ctx context.Context, base string, prev oauth.Tokens) (oauth.Tokens, error) {
+		called = true
+		if prev.RefreshToken != "ref-1" {
+			t.Errorf("refresh called with RefreshToken = %q, want ref-1", prev.RefreshToken)
+		}
+		return oauth.Tokens{
+			AccessToken:  "fresh",
+			RefreshToken: "ref-2",
+			ExpiresAt:    time.Now().Add(time.Hour),
+			ClientID:     prev.ClientID,
+		}, nil
+	}
+	tok, err := credentials.ActiveBearer(context.Background(), home, registryURL, refresh)
+	if err != nil {
+		t.Fatalf("ActiveBearer: %v", err)
+	}
+	if !called {
+		t.Fatal("refresh was not invoked for an expired OAuth token")
+	}
+	if tok != "fresh" {
+		t.Errorf("ActiveBearer = %q, want fresh", tok)
+	}
+
+	// Persisted rotation: next Load should see the new tokens.
+	f2, _ := credentials.Load(home)
+	e2, _ := f2.Get(registryURL)
+	if e2.OAuth == nil || e2.OAuth.AccessToken != "fresh" || e2.OAuth.RefreshToken != "ref-2" {
+		t.Errorf("persisted OAuth = %+v, want fresh/ref-2", e2.OAuth)
+	}
+}
+
+func TestActiveBearerFallsThroughToPatOnRefreshFailure(t *testing.T) {
+	os.Unsetenv("FGLPKG_TOKEN")
+	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	home := t.TempDir()
+	f, _ := credentials.Load(home)
+	f.SetOAuth(registryURL, oauth.Tokens{
+		AccessToken:  "expired",
+		RefreshToken: "ref-1",
+		ExpiresAt:    time.Now().Add(-time.Minute),
+		ClientID:     "c",
+	}, "")
+	f.Set(registryURL, "fallback-pat", "")
+	f.Save(home) //nolint:errcheck
+
+	refresh := func(ctx context.Context, base string, prev oauth.Tokens) (oauth.Tokens, error) {
+		return oauth.Tokens{}, context.DeadlineExceeded
+	}
+	tok, err := credentials.ActiveBearer(context.Background(), home, registryURL, refresh)
+	if err != nil {
+		t.Fatalf("ActiveBearer: %v", err)
+	}
+	if tok != "fallback-pat" {
+		t.Errorf("ActiveBearer = %q, want fallback-pat", tok)
+	}
+}
+
+func TestActiveBearerAnonymousWhenNothingStored(t *testing.T) {
+	os.Unsetenv("FGLPKG_TOKEN")
+	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	tok, err := credentials.ActiveBearer(context.Background(), t.TempDir(), registryURL, nil)
+	if err != nil {
+		t.Fatalf("ActiveBearer: %v", err)
+	}
+	if tok != "" {
+		t.Errorf("ActiveBearer = %q, want empty (no stored creds)", tok)
+	}
+}
+
+// ─── ActivePublishBearer ─────────────────────────────────────────────────────
+
+func TestActivePublishBearerEnvWins(t *testing.T) {
+	t.Setenv("FGLPKG_PUBLISH_TOKEN", "env-pub")
+	home := t.TempDir()
+	f, _ := credentials.Load(home)
+	f.Set(registryURL, "stored-pat", "")
+	f.Save(home) //nolint:errcheck
+
+	if got := credentials.ActivePublishBearer(home, registryURL); got != "env-pub" {
+		t.Errorf("ActivePublishBearer = %q, want env-pub", got)
+	}
+}
+
+func TestActivePublishBearerFallsToStored(t *testing.T) {
+	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+	home := t.TempDir()
+	f, _ := credentials.Load(home)
+	f.Set(registryURL, "stored-pat", "")
+	f.Save(home) //nolint:errcheck
+
+	if got := credentials.ActivePublishBearer(home, registryURL); got != "stored-pat" {
+		t.Errorf("ActivePublishBearer = %q, want stored-pat", got)
 	}
 }
