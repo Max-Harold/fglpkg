@@ -160,33 +160,15 @@ func TestLegacyTokenMigratesToPat(t *testing.T) {
 
 // ─── Env var resolution ──────────────────────────────────────────────────────
 
-func TestConsumerEnvBearerPrecedence(t *testing.T) {
+func TestConsumerEnvBearer(t *testing.T) {
 	t.Setenv("FGLPKG_TOKEN", "consumer-tok")
-	t.Setenv("FGLPKG_PUBLISH_TOKEN", "publish-tok")
 	if got := credentials.ConsumerEnvBearer(); got != "consumer-tok" {
-		t.Errorf("ConsumerEnvBearer = %q, want consumer-tok (FGLPKG_TOKEN must win)", got)
-	}
-}
-
-func TestConsumerEnvBearerFallsBack(t *testing.T) {
-	os.Unsetenv("FGLPKG_TOKEN")
-	t.Setenv("FGLPKG_PUBLISH_TOKEN", "publish-tok")
-	if got := credentials.ConsumerEnvBearer(); got != "publish-tok" {
-		t.Errorf("ConsumerEnvBearer = %q, want publish-tok fallback", got)
-	}
-}
-
-func TestPublisherEnvBearerIgnoresFglpkgToken(t *testing.T) {
-	t.Setenv("FGLPKG_TOKEN", "consumer-tok")
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
-	if got := credentials.PublisherEnvBearer(); got != "" {
-		t.Errorf("PublisherEnvBearer = %q, want empty (FGLPKG_TOKEN must NOT apply to publisher)", got)
+		t.Errorf("ConsumerEnvBearer = %q, want consumer-tok", got)
 	}
 }
 
 func TestTokenForEnvVarOverride(t *testing.T) {
-	os.Unsetenv("FGLPKG_TOKEN")
-	t.Setenv("FGLPKG_PUBLISH_TOKEN", "env-token")
+	t.Setenv("FGLPKG_TOKEN", "env-token")
 	tok := credentials.TokenFor(t.TempDir(), registryURL)
 	if tok != "env-token" {
 		t.Errorf("TokenFor = %q, want env-token", tok)
@@ -194,7 +176,7 @@ func TestTokenForEnvVarOverride(t *testing.T) {
 }
 
 func TestTokenForCredentialsFile(t *testing.T) {
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+
 	os.Unsetenv("FGLPKG_TOKEN")
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
@@ -208,7 +190,7 @@ func TestTokenForCredentialsFile(t *testing.T) {
 }
 
 func TestTokenForNotFound(t *testing.T) {
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+
 	os.Unsetenv("FGLPKG_TOKEN")
 	tok := credentials.TokenFor(t.TempDir(), registryURL)
 	if tok != "" {
@@ -241,7 +223,7 @@ func TestActiveBearerEnvWins(t *testing.T) {
 
 func TestActiveBearerOAuthUnexpired(t *testing.T) {
 	os.Unsetenv("FGLPKG_TOKEN")
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
 	f.SetOAuth(registryURL, oauth.Tokens{
@@ -262,7 +244,7 @@ func TestActiveBearerOAuthUnexpired(t *testing.T) {
 
 func TestActiveBearerRefreshesAndPersists(t *testing.T) {
 	os.Unsetenv("FGLPKG_TOKEN")
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
 	f.SetOAuth(registryURL, oauth.Tokens{
@@ -307,7 +289,7 @@ func TestActiveBearerRefreshesAndPersists(t *testing.T) {
 
 func TestActiveBearerFallsThroughToPatOnRefreshFailure(t *testing.T) {
 	os.Unsetenv("FGLPKG_TOKEN")
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
 	f.SetOAuth(registryURL, oauth.Tokens{
@@ -333,7 +315,7 @@ func TestActiveBearerFallsThroughToPatOnRefreshFailure(t *testing.T) {
 
 func TestActiveBearerAnonymousWhenNothingStored(t *testing.T) {
 	os.Unsetenv("FGLPKG_TOKEN")
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+
 	tok, err := credentials.ActiveBearer(context.Background(), t.TempDir(), registryURL, nil)
 	if err != nil {
 		t.Fatalf("ActiveBearer: %v", err)
@@ -346,7 +328,7 @@ func TestActiveBearerAnonymousWhenNothingStored(t *testing.T) {
 // ─── ActivePublishBearer ─────────────────────────────────────────────────────
 
 func TestActivePublishBearerEnvWins(t *testing.T) {
-	t.Setenv("FGLPKG_PUBLISH_TOKEN", "env-pub")
+	t.Setenv("FGLPKG_TOKEN", "env-pub")
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
 	f.Set(registryURL, "stored-pat", "")
@@ -358,7 +340,7 @@ func TestActivePublishBearerEnvWins(t *testing.T) {
 }
 
 func TestActivePublishBearerFallsToStored(t *testing.T) {
-	os.Unsetenv("FGLPKG_PUBLISH_TOKEN")
+
 	home := t.TempDir()
 	f, _ := credentials.Load(home)
 	f.Set(registryURL, "stored-pat", "")

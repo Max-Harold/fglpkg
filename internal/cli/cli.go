@@ -102,20 +102,12 @@ func Execute() error {
 		return cmdPublish(args)
 	case "pack":
 		return cmdPack(args)
-	case "unpublish":
-		return cmdUnpublish(args)
 	case "login":
 		return cmdLogin(args)
 	case "logout":
 		return cmdLogout(args)
 	case "whoami":
 		return cmdWhoami(args)
-	case "owner":
-		return cmdOwner(args)
-	case "token":
-		return cmdToken(args)
-	case "config":
-		return cmdConfig(args)
 	case "workspace", "ws":
 		return cmdWorkspace(args)
 	case "run":
@@ -687,9 +679,8 @@ func cmdPublish(args []string) error {
 	registryURL := defaultPublishRegistry()
 
 	// Resolve the bearer. In --ci mode the token must come from the
-	// environment (FGLPKG_TOKEN / FGLPKG_PUBLISH_TOKEN) — CI runners should
-	// not depend on cached interactive credentials, and the error must not
-	// suggest the interactive `fglpkg login`.
+	// environment (FGLPKG_TOKEN) — CI runners should not depend on cached
+	// interactive credentials, and the error must not suggest `fglpkg login`.
 	var token string
 	if ci {
 		token = credentials.ConsumerEnvBearer()
@@ -1216,70 +1207,6 @@ func setEnvVar(environ []string, key, value string) []string {
 	return append(environ, prefix+value)
 }
 
-// ─── unpublish ────────────────────────────────────────────────────────────────
-
-func cmdUnpublish(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: fglpkg unpublish <package>@<version>")
-	}
-	name, version, err := parsePackageArg(args[0])
-	if err != nil {
-		return err
-	}
-	if version == "" || version == "latest" {
-		return fmt.Errorf("a specific version is required: fglpkg unpublish <package>@<version>")
-	}
-
-	home, err := fglpkgHome()
-	if err != nil {
-		return err
-	}
-	registryURL := registry.LegacyBase
-	token := credentials.ActivePublishBearer(home, registryURL)
-	if token == "" {
-		return fmt.Errorf("not logged in to legacy publish registry %s\nSet FGLPKG_PUBLISH_TOKEN to use this command (legacy fly.dev only)", registryURL)
-	}
-
-	fmt.Printf("Unpublishing %s@%s...\n", name, version)
-
-	// 1. Delete the GitHub Release (and its asset).
-	githubToken := credentials.GitHubTokenFor(home, registryURL)
-	if githubToken != "" {
-		owner, repo, err := resolveGitHubRepo()
-		if err == nil {
-			tag := gh.ReleaseTag(name, version)
-			fmt.Printf("  Deleting GitHub release %s...\n", tag)
-			if err := gh.DeleteRelease(githubToken, owner, repo, tag); err != nil {
-				fmt.Printf("  Warning: could not delete GitHub release: %v\n", err)
-			} else {
-				fmt.Println("  Deleted GitHub release")
-			}
-		}
-	}
-
-	// 2. Remove metadata from the registry.
-	url := fmt.Sprintf("%s/packages/%s/%s/unpublish",
-		strings.TrimRight(registryURL, "/"), name, version)
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("registry request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("registry returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	fmt.Printf("✓ Unpublished %s@%s\n", name, version)
-	return nil
-}
-
 // ─── login ────────────────────────────────────────────────────────────────────
 
 // cmdLogin signs the user into the consumer registry.
@@ -1448,287 +1375,6 @@ func cmdWhoami(_ []string) error {
 	} else {
 		fmt.Println("Scopes:   (none)")
 	}
-	ghToken := credentials.GitHubTokenFor(home, registryURL)
-	if ghToken != "" {
-		fmt.Println("GitHub token: configured")
-	} else {
-		fmt.Println("GitHub token: not configured (set FGLPKG_GITHUB_TOKEN)")
-	}
-	return nil
-}
-
-// ─── owner ────────────────────────────────────────────────────────────────────
-
-func cmdOwner(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: fglpkg owner <list|add|remove> <package> [username]")
-	}
-	sub, rest := args[0], args[1:]
-	switch sub {
-	case "list":
-		if len(rest) == 0 {
-			return fmt.Errorf("usage: fglpkg owner list <package>")
-		}
-		return cmdOwnerList(rest[0])
-	case "add":
-		if len(rest) < 2 {
-			return fmt.Errorf("usage: fglpkg owner add <package> <username>")
-		}
-		return cmdOwnerAdd(rest[0], rest[1])
-	case "remove":
-		if len(rest) < 2 {
-			return fmt.Errorf("usage: fglpkg owner remove <package> <username>")
-		}
-		return cmdOwnerRemove(rest[0], rest[1])
-	default:
-		return fmt.Errorf("unknown owner subcommand %q", sub)
-	}
-}
-
-func cmdOwnerList(pkg string) error {
-	home, _ := fglpkgHome()
-	reg := registry.LegacyBase
-	token := credentials.ActivePublishBearer(home, reg)
-	resp, err := authGet(reg+"/packages/"+pkg+"/owners", token)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return registryError(resp)
-	}
-	var result struct {
-		Owners []string `json:"owners"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
-	fmt.Printf("Owners of %s:\n", pkg)
-	for _, o := range result.Owners {
-		fmt.Printf("  %s\n", o)
-	}
-	return nil
-}
-
-func cmdOwnerAdd(pkg, username string) error {
-	home, _ := fglpkgHome()
-	reg := registry.LegacyBase
-	token := credentials.ActivePublishBearer(home, reg)
-	if token == "" {
-		return fmt.Errorf("not logged in — run 'fglpkg login'")
-	}
-	body := fmt.Sprintf(`{"username":%q}`, username)
-	resp, err := authPost(reg+"/packages/"+pkg+"/owners", token, body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return registryError(resp)
-	}
-	fmt.Printf("✓ Added %s as owner of %s\n", username, pkg)
-	return nil
-}
-
-func cmdOwnerRemove(pkg, username string) error {
-	home, _ := fglpkgHome()
-	reg := registry.LegacyBase
-	token := credentials.ActivePublishBearer(home, reg)
-	if token == "" {
-		return fmt.Errorf("not logged in — run 'fglpkg login'")
-	}
-	req, _ := http.NewRequest(http.MethodDelete,
-		reg+"/packages/"+pkg+"/owners/"+username, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return registryError(resp)
-	}
-	fmt.Printf("✓ Removed %s from owners of %s\n", username, pkg)
-	return nil
-}
-
-// ─── token ────────────────────────────────────────────────────────────────────
-
-func cmdToken(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: fglpkg token <create|revoke|rotate> [username]")
-	}
-	sub, rest := args[0], args[1:]
-	home, _ := fglpkgHome()
-	reg := registry.LegacyBase
-	token := credentials.ActivePublishBearer(home, reg)
-	if token == "" {
-		return fmt.Errorf("not logged in — run 'fglpkg login'")
-	}
-
-	switch sub {
-	case "create":
-		username := ""
-		if len(rest) > 0 {
-			username = rest[0]
-		} else {
-			username = promptWithDefault("New username", "")
-		}
-		email := promptWithDefault("Email (optional)", "")
-		body := fmt.Sprintf(`{"username":%q,"email":%q}`, username, email)
-		resp, err := authPost(reg+"/auth/token", token, body)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusCreated {
-			return registryError(resp)
-		}
-		var result map[string]string
-		json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
-		fmt.Printf("✓ Created user %s\nToken: %s\n⚠ Save this token — it will not be shown again.\n",
-			result["username"], result["token"])
-
-	case "revoke":
-		target := ""
-		if len(rest) > 0 {
-			target = rest[0]
-		}
-		body := ""
-		if target != "" {
-			body = fmt.Sprintf(`{"username":%q}`, target)
-		}
-		resp, err := authDo(http.MethodDelete, reg+"/auth/token", token, body)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return registryError(resp)
-		}
-		if target != "" {
-			fmt.Printf("✓ Revoked token for %s\n", target)
-		} else {
-			fmt.Println("✓ Token revoked")
-		}
-
-	case "rotate":
-		resp, err := authPost(reg+"/auth/token/rotate", token, "")
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return registryError(resp)
-		}
-		var result map[string]string
-		json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck
-		fmt.Printf("✓ Token rotated\nNew token: %s\n⚠ Save this token — it will not be shown again.\n",
-			result["token"])
-
-	default:
-		return fmt.Errorf("unknown token subcommand %q", sub)
-	}
-	return nil
-}
-
-// ─── config ───────────────────────────────────────────────────────────────────
-
-func cmdConfig(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: fglpkg config <github-repos> <list|add|remove> [owner/repo]")
-	}
-	switch args[0] {
-	case "github-repos":
-		return cmdConfigGitHubRepos(args[1:])
-	default:
-		return fmt.Errorf("unknown config subcommand %q", args[0])
-	}
-}
-
-func cmdConfigGitHubRepos(args []string) error {
-	if len(args) == 0 {
-		return cmdConfigGitHubReposList()
-	}
-	switch args[0] {
-	case "list":
-		return cmdConfigGitHubReposList()
-	case "add":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: fglpkg config github-repos add <owner/repo>")
-		}
-		return cmdConfigGitHubReposAdd(args[1])
-	case "remove":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: fglpkg config github-repos remove <owner/repo>")
-		}
-		return cmdConfigGitHubReposRemove(args[1])
-	default:
-		return fmt.Errorf("unknown github-repos subcommand %q", args[0])
-	}
-}
-
-func cmdConfigGitHubReposList() error {
-	cfg, err := registry.FetchConfig()
-	if err != nil {
-		return err
-	}
-	if len(cfg.GitHubRepos) == 0 {
-		fmt.Println("No GitHub repos configured.")
-		return nil
-	}
-	fmt.Println("GitHub package repos:")
-	for _, r := range cfg.GitHubRepos {
-		fmt.Printf("  %s/%s\n", r.Owner, r.Repo)
-	}
-	return nil
-}
-
-func cmdConfigGitHubReposAdd(ownerRepo string) error {
-	owner, repo, err := parseOwnerRepo(ownerRepo)
-	if err != nil {
-		return err
-	}
-	home, _ := fglpkgHome()
-	reg := registry.LegacyBase
-	token := credentials.ActivePublishBearer(home, reg)
-	if token == "" {
-		return fmt.Errorf("not logged in — run 'fglpkg login'")
-	}
-	body := fmt.Sprintf(`{"owner":%q,"repo":%q}`, owner, repo)
-	resp, err := authPost(reg+"/config/github-repos", token, body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return registryError(resp)
-	}
-	fmt.Printf("✓ Added GitHub repo %s/%s\n", owner, repo)
-	return nil
-}
-
-func cmdConfigGitHubReposRemove(ownerRepo string) error {
-	owner, repo, err := parseOwnerRepo(ownerRepo)
-	if err != nil {
-		return err
-	}
-	home, _ := fglpkgHome()
-	reg := registry.LegacyBase
-	token := credentials.ActivePublishBearer(home, reg)
-	if token == "" {
-		return fmt.Errorf("not logged in — run 'fglpkg login'")
-	}
-	url := fmt.Sprintf("%s/config/github-repos/%s/%s", reg, owner, repo)
-	req, _ := http.NewRequest(http.MethodDelete, url, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return registryError(resp)
-	}
-	fmt.Printf("✓ Removed GitHub repo %s/%s\n", owner, repo)
 	return nil
 }
 
@@ -2285,13 +1931,9 @@ COMMANDS:
                      prints a machine-readable status line)
   pack [-o file]    Build the publishable zip locally without uploading
                     (--list prints contents without writing a file)
-  unpublish <p>@<v> Remove a published version (LEGACY fly.dev registry only)
   login             Sign in to the registry (OAuth browser flow, or --token <PAT>)
   logout            Remove saved credentials
   whoami            Show current authenticated user
-  owner             Manage package ownership (LEGACY fly.dev registry only)
-  token             Manage user tokens (LEGACY fly.dev registry only)
-  config            Manage registry configuration (LEGACY fly.dev registry only)
   workspace         Manage monorepo workspaces
   run <command>     Run a script from an installed package
   docs <package>    List or view package documentation
@@ -2320,12 +1962,7 @@ ENVIRONMENT:
   FGLPKG_HOME              Override ~/.fglpkg
   FGLPKG_REGISTRY          Registry URL for install/search/audit/whoami/publish.
                            Default: https://service.generointelligence.ai
-  FGLPKG_PUBLISH_REGISTRY  Overrides FGLPKG_REGISTRY for the publish command only
   FGLPKG_TOKEN             Bearer token for the registry (overrides stored OAuth)
-  FGLPKG_PUBLISH_TOKEN     Bearer for the LEGACY fly.dev commands
-                           (unpublish/owner/token/config)
-  FGLPKG_GITHUB_TOKEN      GitHub PAT — only used by LEGACY downloads/unpublish
-  FGLPKG_GITHUB_REPO       GitHub owner/repo — only used by LEGACY commands
   FGLPKG_GENERO_VERSION    Override Genero version detection
   FGLPKG_INSTALL_CONCURRENCY  Cap parallel downloads during install (default 4)
 
@@ -2355,27 +1992,6 @@ func fglpkgHome() (string, error) {
 	return filepath.Join(home, ".fglpkg"), nil
 }
 
-// resolveGitHubRepo returns the GitHub owner/repo for package storage.
-// Precedence: FGLPKG_GITHUB_REPO env var > registry config > error.
-func resolveGitHubRepo() (owner, repo string, err error) {
-	owner, repo, err = gh.RepoFromEnv()
-	if err != nil {
-		return "", "", err
-	}
-	if owner != "" {
-		return owner, repo, nil
-	}
-	// Fall back to the registry config.
-	cfg, err := registry.FetchConfig()
-	if err != nil {
-		return "", "", fmt.Errorf("cannot determine GitHub repo: FGLPKG_GITHUB_REPO is not set and registry config is unavailable: %w", err)
-	}
-	if len(cfg.GitHubRepos) == 0 {
-		return "", "", fmt.Errorf("no GitHub repos configured on the registry\nSet FGLPKG_GITHUB_REPO or ask an admin to run: fglpkg config github-repos add <owner/repo>")
-	}
-	return cfg.GitHubRepos[0].Owner, cfg.GitHubRepos[0].Repo, nil
-}
-
 func newInstaller(home string) *installer.Installer {
 	// Always look up credentials from the global home directory, even when
 	// installing to a local project directory (--local).
@@ -2384,15 +2000,7 @@ func newInstaller(home string) *installer.Installer {
 		globalHome = home
 	}
 	registryURL := defaultRegistry()
-	// GitHub token only matters for the legacy fglpkg-registry.fly.dev flow
-	// (downloads indirected to private GitHub Releases). The new registry
-	// serves zips itself, so the warning is downgraded — only surface it
-	// when the consumer registry IS the legacy one.
 	githubToken := credentials.GitHubTokenFor(globalHome, registryURL)
-	if githubToken == "" && strings.Contains(registryURL, "fglpkg-registry.fly.dev") {
-		fmt.Println("  Warning: no GitHub token configured — downloads from private repos will fail")
-		fmt.Println("  Set FGLPKG_GITHUB_TOKEN")
-	}
 	registryToken, _ := credentials.ActiveBearer(context.Background(), globalHome, registryURL, oauth.Refresh)
 	return installer.New(home, githubToken, registryToken)
 }
@@ -2407,18 +2015,8 @@ func defaultRegistry() string {
 	return "https://service.generointelligence.ai"
 }
 
-// defaultPublishRegistry returns the publisher registry URL — publish,
-// unpublish, owner, token, config. Stays on fglpkg-registry.fly.dev until
-// the new server adds publish endpoints. Override with FGLPKG_PUBLISH_REGISTRY,
-// falling back to FGLPKG_REGISTRY for self-hosted single-registry setups.
 func defaultPublishRegistry() string {
-	if r := os.Getenv("FGLPKG_PUBLISH_REGISTRY"); r != "" {
-		return strings.TrimRight(r, "/")
-	}
-	if r := os.Getenv("FGLPKG_REGISTRY"); r != "" {
-		return strings.TrimRight(r, "/")
-	}
-	return "https://fglpkg-registry.fly.dev"
+	return defaultRegistry()
 }
 
 func parsePackageArg(arg string) (name, version string, err error) {

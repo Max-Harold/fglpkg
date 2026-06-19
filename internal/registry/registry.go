@@ -1,15 +1,9 @@
 // Package registry is the HTTP client for the Genero Package Registry.
 //
-// The consumer side talks the v1 "registry" protocol (paths under
-// /registry/...) used by fglpkg-cli's backend at service.generointelligence.ai.
-// The publisher side talks the older /packages/... protocol used by the
-// fglpkg-registry.fly.dev server, where fglpkg's `publish`, `unpublish`,
-// `owner`, `token` and `config` commands continue to operate.
-//
-// The split exists because the new registry doesn't yet expose publish
-// endpoints. Consumer commands point at the new base by default; publisher
-// commands point at the old base by default. Users can override via
-// FGLPKG_REGISTRY (consumer) and FGLPKG_PUBLISH_REGISTRY (publisher).
+// All operations (search, resolve, install, publish) talk the v1 "registry"
+// protocol (paths under /registry/...) against a single backend at
+// service.generointelligence.ai. The base URL can be overridden via the
+// FGLPKG_REGISTRY environment variable.
 package registry
 
 import (
@@ -33,17 +27,8 @@ import (
 var ErrNotFound = errors.New("package not found in registry")
 
 const (
-	defaultConsumerBase  = "https://service.generointelligence.ai"
-	defaultPublisherBase = "https://service.generointelligence.ai"
+	defaultRegistryBase = "https://service.generointelligence.ai"
 )
-
-// LegacyBase is the old fglpkg-registry.fly.dev server used by
-// cmdUnpublish/cmdOwner/cmdToken/cmdConfig — operations that have no
-// equivalent on the new /registry/* protocol today. These commands are
-// expected to disappear once the new registry exposes the admin surface
-// over its own API. Declared as a var (not const) so tests can point it at
-// httptest.Server URLs.
-var LegacyBase = "https://fglpkg-registry.fly.dev"
 
 // Bearer is the function the registry HTTP client calls to obtain the
 // current bearer token for consumer-side authenticated requests. CLI swaps
@@ -216,7 +201,7 @@ func AbsoluteDownloadURL(raw string) string {
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 		return raw
 	}
-	return consumerBase() + "/" + strings.TrimPrefix(raw, "/")
+	return registryBase() + "/" + strings.TrimPrefix(raw, "/")
 }
 
 // Resolve fetches the best matching version of name for the given constraint.
@@ -248,7 +233,7 @@ func Resolve(name, constraint, generoMajor string) (*PackageInfo, error) {
 
 // Search queries the consumer registry for packages matching term.
 func Search(term string) ([]SearchResult, error) {
-	u := fmt.Sprintf("%s/registry/packages?q=%s", consumerBase(), url.QueryEscape(term))
+	u := fmt.Sprintf("%s/registry/packages?q=%s", registryBase(), url.QueryEscape(term))
 	data, err := httpGetAuthed(u)
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
@@ -284,7 +269,7 @@ func PublishCreatePackage(slug, name, description, visibility string) error {
 		"description": description,
 		"visibility":  visibility,
 	})
-	status, respBody, err := publishJSON(http.MethodPost, publisherBase()+"/registry/packages", body)
+	status, respBody, err := publishJSON(http.MethodPost, registryBase()+"/registry/packages", body)
 	if err != nil {
 		return fmt.Errorf("create package %q: %w", slug, err)
 	}
@@ -348,7 +333,7 @@ func PublishCreateVersion(slug, version, changelog string, tags map[string][]str
 	body, _ := json.Marshal(payload)
 	status, respBody, err := publishJSON(http.MethodPost,
 		fmt.Sprintf("%s/registry/packages/%s/versions",
-			publisherBase(), url.PathEscape(slug)), body)
+			registryBase(), url.PathEscape(slug)), body)
 	if err != nil {
 		return fmt.Errorf("create version %s@%s: %w", slug, version, err)
 	}
@@ -368,7 +353,7 @@ func PublishCreateVersion(slug, version, changelog string, tags map[string][]str
 // records for download Content-Disposition.
 func PublishUploadArtifact(slug, version, variant, filename string, zip io.Reader) error {
 	u := fmt.Sprintf("%s/registry/packages/%s/versions/%s/artifacts/%s?filename=%s",
-		publisherBase(),
+		registryBase(),
 		url.PathEscape(slug), url.PathEscape(version), url.PathEscape(variant),
 		url.QueryEscape(filename))
 	bearer := Bearer()
@@ -387,7 +372,7 @@ func PublishUploadArtifact(slug, version, variant, filename string, zip io.Reade
 // no-op response on 200 if the version is already pending.
 func PublishSubmit(slug, version string) error {
 	u := fmt.Sprintf("%s/registry/packages/%s/versions/%s/submit",
-		publisherBase(), url.PathEscape(slug), url.PathEscape(version))
+		registryBase(), url.PathEscape(slug), url.PathEscape(version))
 	status, respBody, err := publishJSON(http.MethodPost, u, nil)
 	if err != nil {
 		return fmt.Errorf("submit %s@%s: %w", slug, version, err)
@@ -426,35 +411,6 @@ func VariantsFor(slug, version string) ([]string, error) {
 // Only used by cmdUnpublish, cmdOwner, cmdToken, cmdConfig — operations that
 // have no equivalent on the new /registry/* protocol. Hardcoded against the
 // fly.dev URL via the helpers below.
-
-// FetchConfig returns the legacy publisher registry's configuration. The new
-// registry does not expose this endpoint; only the legacy fly.dev server does.
-func FetchConfig() (*RegistryConfig, error) {
-	data, err := httpGetPublisher(LegacyBase + "/config")
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch registry config: %w", err)
-	}
-	var cfg RegistryConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("invalid registry config response: %w", err)
-	}
-	return &cfg, nil
-}
-
-// PublisherVersionList lists published versions via the LEGACY endpoint.
-// Used by the legacy commands; the new publish flow uses VariantsFor.
-func PublisherVersionList(name string) (*VersionList, error) {
-	u := fmt.Sprintf("%s/packages/%s/versions", LegacyBase, url.PathEscape(name))
-	data, err := httpGetPublisher(u)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch publisher version list for %q: %w", name, err)
-	}
-	var vl VersionList
-	if err := json.Unmarshal(data, &vl); err != nil {
-		return nil, fmt.Errorf("invalid publisher version list response: %w", err)
-	}
-	return &vl, nil
-}
 
 // ─── Internal: new-protocol types ────────────────────────────────────────────
 
@@ -519,7 +475,7 @@ type apiBrowseResponse struct {
 }
 
 func fetchPackageDetail(slug string) (*apiPackageDetail, error) {
-	u := fmt.Sprintf("%s/registry/packages/%s", consumerBase(), url.PathEscape(slug))
+	u := fmt.Sprintf("%s/registry/packages/%s", registryBase(), url.PathEscape(slug))
 	data, err := httpGetAuthed(u)
 	if err != nil {
 		return nil, err
@@ -561,21 +517,11 @@ func pickArtifact(arts []apiArtifact, generoMajor string) *apiArtifact {
 
 // ─── Internal: HTTP ──────────────────────────────────────────────────────────
 
-func consumerBase() string {
+func registryBase() string {
 	if r := os.Getenv("FGLPKG_REGISTRY"); r != "" {
 		return strings.TrimRight(r, "/")
 	}
-	return defaultConsumerBase
-}
-
-func publisherBase() string {
-	if r := os.Getenv("FGLPKG_PUBLISH_REGISTRY"); r != "" {
-		return strings.TrimRight(r, "/")
-	}
-	if r := os.Getenv("FGLPKG_REGISTRY"); r != "" {
-		return strings.TrimRight(r, "/")
-	}
-	return defaultPublisherBase
+	return defaultRegistryBase
 }
 
 // httpGetAuthed performs a GET against the consumer registry, sending the
