@@ -1,8 +1,8 @@
 # fglpkg Enhancement Roadmap
 ## Professional Services Internal Tool Evolution
 
-**Document Version:** 1.0  
-**Date:** April 19, 2026  
+**Document Version:** 1.1  
+**Date:** June 17, 2026 (status update; original April 19, 2026)  
 **Purpose:** Enhancement roadmap for fglpkg as Professional Services internal tooling while building business case for broader adoption
 
 ---
@@ -43,6 +43,7 @@ The existing fglpkg implementation is architecturally sound and feature-rich, re
 ## Phase 1: Professional Services Readiness (3 months)
 
 ### 1.1 Web Registry Interface
+**Status:** ✅ Complete — delivered as the Genero Intelligence portals (Public, Admin, Partner) on Cloudflare Workers, rather than the standalone `fglpkg-web` Next.js app sketched below.  
 **Priority:** High  
 **Effort:** 4-6 weeks  
 **Resources:** 1 frontend developer + design support
@@ -84,6 +85,7 @@ fglpkg-web/
 - Customer demos show professional, branded package management
 
 ### 1.2 Documentation System
+**Status:** ✅ Complete — `docs` glob field and `fglpkg docs` CLI shipped; `keywords` field for search/discovery shipped; README rendering live in the Genero Intelligence Public Portal.  
 **Priority:** High  
 **Effort:** 2-3 weeks  
 **Resources:** 1 developer + technical writer
@@ -124,6 +126,7 @@ fglpkg publish --include-docs           # Include docs/ directory in package
 - Example code highlighting and copy-to-clipboard
 
 ### 1.3 Professional Services Package Templates
+**Status:** ⚠️ Partial — generic `fglpkg init --template library` / `--template app` shipped. Named PS-specific templates (`ps-client`, `ps-utility`, `ps-migration`, `ps-integration`) are not yet built.  
 **Priority:** Medium  
 **Effort:** 1-2 weeks  
 **Resources:** 1 developer + PS team consultation
@@ -149,6 +152,7 @@ fglpkg init --template ps-migration     # Migration tool template
 - Basic build scripts and deployment configurations
 
 ### 1.4 Usage Analytics and ROI Tracking
+**Status:** ❌ Not started.  
 **Priority:** Medium  
 **Effort:** 2-3 weeks  
 **Resources:** 1 developer
@@ -179,6 +183,7 @@ fglpkg publish --telemetry=on           # Track publishing patterns
 ## Phase 2: Customer-Ready Features (6 months)
 
 ### 2.1 Enterprise Authentication & Authorization
+**Status:** ⚠️ Partial — OAuth 2.0 (auth code + PKCE + Dynamic Client Registration) shipped against the Genero Intelligence registry; PAT tokens, refresh, and silent re-auth in the CLI. Still outstanding: LDAP/AD integration, role-based ACLs beyond owner/admin, org/team management, package signing, vulnerability scanning.  
 **Priority:** High for customer deployments  
 **Effort:** 3-4 weeks  
 **Resources:** 1 backend developer + security review
@@ -210,6 +215,7 @@ PUT /packages/:name/visibility          # Set public/private/org-only
 - Vulnerability scanning for Java dependencies
 
 ### 2.2 VS Code Extension
+**Status:** ❌ Not started.  
 **Priority:** Medium (high impact for adoption)  
 **Effort:** 4-6 weeks  
 **Resources:** 1 frontend developer familiar with VS Code API
@@ -249,6 +255,7 @@ fglpkg-vscode/
 - Terminal integration for fglpkg commands
 
 ### 2.3 Self-Hosted Registry Deployment Kit
+**Status:** ❌ Not started — and partly **superseded** by the Genero Intelligence Cloudflare-hosted SaaS deployment, which removes the need for customers to self-host. A customer-deployable Docker/Kubernetes kit may still be desirable for air-gapped sites; decide before reviving.  
 **Priority:** High for customer environments  
 **Effort:** 2-3 weeks  
 **Resources:** 1 DevOps-focused developer
@@ -305,6 +312,7 @@ spec:
 - Integration with customer CI/CD pipelines
 
 ### 2.4 Advanced Package Features
+**Status:** ⚠️ Partial — `fglpkg audit` and `fglpkg outdated` shipped. Still outstanding: `fglpkg deprecate`, `fglpkg migrate`, and the enhanced deprecation/security/statistics metadata fields.  
 **Priority:** Medium  
 **Effort:** 3-4 weeks  
 **Resources:** 1 backend developer
@@ -343,6 +351,7 @@ fglpkg outdated                         # Check for newer versions
 ## Phase 3: Enterprise & Ecosystem Integration (12 months)
 
 ### 3.1 CI/CD Pipeline Integration
+**Status:** ⚠️ Partial — `fglpkg publish --ci` shipped (non-interactive publish, expects `FGLPKG_TOKEN`). Still outstanding: a published `fourjs/setup-fglpkg` GitHub Action, Jenkins plugin, and Azure DevOps extension.  
 **Priority:** Medium  
 **Effort:** 2-3 weeks  
 **Resources:** 1 developer + DevOps consultation
@@ -378,6 +387,7 @@ jobs:
 - Integration with Azure Artifacts (alternative storage)
 
 ### 3.2 Advanced Security Features
+**Status:** ❌ Not started.  
 **Priority:** High for enterprise customers  
 **Effort:** 4-5 weeks  
 **Resources:** 1 security-focused developer + external security audit
@@ -402,6 +412,7 @@ fglpkg audit --security                  # Full security audit
 - Detailed audit logging with retention policies
 
 ### 3.3 Ecosystem Metrics and Analytics
+**Status:** ❌ Not started.  
 **Priority:** Low (nice-to-have)  
 **Effort:** 3-4 weeks  
 **Resources:** 1 full-stack developer + analytics expertise

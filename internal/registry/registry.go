@@ -63,10 +63,11 @@ var Bearer = func() string {
 var TryRefresh = func() bool { return false }
 
 // PackageInfo is the resolved metadata for a specific package version.
-// The shape predates the cli protocol; under the new protocol, FGLDeps /
-// JavaDeps / GeneroConstraint / Variants are populated as best-effort
-// (often empty) since the new registry's package detail does not return
-// them today.
+// FGLDeps / JavaDeps / GeneroConstraint / License / Author / Readme are
+// populated from the registry's per-version `dependencies` and rich-metadata
+// fields when present. Pre-rich-metadata versions (published before that flow
+// shipped) return empty values for those fields and must be republished to
+// expose them.
 type PackageInfo struct {
 	Name             string                    `json:"name"`
 	Version          string                    `json:"version"`
@@ -173,14 +174,23 @@ func FetchInfoForGenero(name, version, generoMajor string) (*PackageInfo, error)
 	if art == nil {
 		return nil, fmt.Errorf("no artifact available for %s@%s", name, version)
 	}
+	author := v.Author
+	if author == "" {
+		author = d.Owner.Name
+	}
 	info := &PackageInfo{
-		Name:        d.Slug,
-		Version:     v.Version,
-		Description: d.Description,
-		Author:      d.Owner.Name,
-		PublishedAt: v.PublishedAt,
-		DownloadURL: AbsoluteDownloadURL(art.DownloadURL),
-		Checksum:    art.SHA256,
+		Name:             d.Slug,
+		Version:          v.Version,
+		Description:      d.Description,
+		Author:           author,
+		License:          v.License,
+		PublishedAt:      v.PublishedAt,
+		DownloadURL:      AbsoluteDownloadURL(art.DownloadURL),
+		Checksum:         art.SHA256,
+		GeneroConstraint: v.Genero,
+		FGLDeps:          v.Dependencies.FGL,
+		JavaDeps:         v.Dependencies.Java,
+		Readme:           v.Readme,
 	}
 	for _, a := range v.Artifacts {
 		info.Variants = append(info.Variants, VariantInfo{
@@ -465,6 +475,18 @@ type apiVersionSummary struct {
 	SubmittedAt   string              `json:"submitted_at"`
 	PublishedAt   string              `json:"published_at"`
 	ReviewComment string              `json:"review_comment"`
+	Repository    string              `json:"repository"`
+	Author        string              `json:"author"`
+	License       string              `json:"license"`
+	Genero        string              `json:"genero"`
+	Dependencies  apiVersionDeps      `json:"dependencies"`
+	Readme        string              `json:"readme"`
+	Userguide     string              `json:"userguide"`
+}
+
+type apiVersionDeps struct {
+	FGL  map[string]string         `json:"fgl"`
+	Java []manifest.JavaDependency `json:"java"`
 }
 
 type apiOwner struct {
