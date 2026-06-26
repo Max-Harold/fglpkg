@@ -35,10 +35,7 @@ const (
 // this for credentials.ActiveBearer(...) at startup so OAuth refresh +
 // stored PAT lookup are transparent. Default reads env only.
 var Bearer = func() string {
-	if t := strings.TrimSpace(os.Getenv("FGLPKG_TOKEN")); t != "" {
-		return t
-	}
-	return strings.TrimSpace(os.Getenv("FGLPKG_PUBLISH_TOKEN"))
+	return strings.TrimSpace(os.Getenv("FGLPKG_TOKEN"))
 }
 
 // TryRefresh is called by the registry HTTP client on a 401 to attempt a
