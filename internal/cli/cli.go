@@ -63,6 +63,16 @@ var (
 // so buffered input is never lost between successive promptWithDefault calls.
 var reader = bufio.NewReader(os.Stdin)
 
+// privateHint appends a login suggestion to an ErrNotFound when the user has
+// no bearer token. Private packages return 404 indistinguishably from missing
+// packages; we can only hint when auth was never attempted.
+func privateHint(err error, pkg string) error {
+	if !errors.Is(err, registry.ErrNotFound) || registry.Bearer() != "" {
+		return err
+	}
+	return fmt.Errorf("%w\n  hint: if %q is a private package, run: fglpkg login", err, pkg)
+}
+
 // Execute is the main CLI entry point.
 func Execute() error {
 	if len(os.Args) < 2 {
@@ -275,7 +285,7 @@ func cmdInstall(args []string) error {
 		fmt.Printf("Resolving %s@%s (Genero %s)...\n", name, version, gv)
 		info, err := registry.Resolve(name, version, generoMajor)
 		if err != nil {
-			return fmt.Errorf("failed to resolve %s@%s: %w", name, version, err)
+			return fmt.Errorf("failed to resolve %s@%s: %w", name, version, privateHint(err, name))
 		}
 		// Older registry server versions omit `name` from the version-info
 		// response; fall back to the user-supplied name so we never write an
@@ -640,23 +650,37 @@ func parseSearchArgs(args []string) (term string, all bool, err error) {
 // ─── publish ──────────────────────────────────────────────────────────────────
 
 // parsePublishFlags reads the publish flags: --dry-run/-n (preview, no
-// network) and --ci (non-interactive pipeline mode).
-func parsePublishFlags(args []string) (dryRun, ci bool, err error) {
+// network), --ci (non-interactive pipeline mode), and --private/--public
+// (visibility override on first publish).
+func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride string, err error) {
+	var wantPrivate, wantPublic bool
 	for _, a := range args {
 		switch a {
 		case "--dry-run", "-n":
 			dryRun = true
 		case "--ci":
 			ci = true
+		case "--private":
+			wantPrivate = true
+		case "--public":
+			wantPublic = true
 		default:
-			return false, false, fmt.Errorf("unexpected argument %q", a)
+			return false, false, "", fmt.Errorf("unexpected argument %q", a)
 		}
 	}
-	return dryRun, ci, nil
+	if wantPrivate && wantPublic {
+		return false, false, "", fmt.Errorf("--private and --public are mutually exclusive")
+	}
+	if wantPrivate {
+		visibilityOverride = "private"
+	} else if wantPublic {
+		visibilityOverride = "public"
+	}
+	return dryRun, ci, visibilityOverride, nil
 }
 
 func cmdPublish(args []string) error {
-	dryRun, ci, err := parsePublishFlags(args)
+	dryRun, ci, visibilityOverride, err := parsePublishFlags(args)
 	if err != nil {
 		return err
 	}
@@ -714,7 +738,7 @@ func cmdPublish(args []string) error {
 	if err := runHook(m, manifest.HookPrePublish, projectDir); err != nil {
 		return err
 	}
-	if err := publishPackage(m, registryURL, generoMajor, dryRun); err != nil {
+	if err := publishPackage(m, registryURL, generoMajor, dryRun, visibilityOverride); err != nil {
 		return fmt.Errorf("publish failed: %w", err)
 	}
 	if dryRun {
@@ -748,7 +772,7 @@ func cmdPublish(args []string) error {
 //     streams the zip body. Server computes size + sha256 and stores in R2.
 //  5. POST /registry/packages/:slug/versions/:version/submit — marks the
 //     version pending so an admin reviews and approves.
-func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRun bool) error {
+func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRun bool, visibilityOverride string) error {
 	// 1. Build the zip.
 	zipData, checksum, err := buildPackageZip(m)
 	if err != nil {
@@ -759,7 +783,10 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 	variant := "genero" + generoMajor
 	filename := gh.VariantAssetName(m.Name, m.Version, generoMajor)
 	slug := m.Name
-	visibility := m.Visibility
+	visibility := visibilityOverride
+	if visibility == "" {
+		visibility = m.Visibility
+	}
 	if visibility == "" {
 		visibility = "public"
 	}

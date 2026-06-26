@@ -53,6 +53,7 @@ func TestPublishPackageDryRunNoNetwork(t *testing.T) {
 		"http://127.0.0.1:1", // registryURL — unreachable; if dry-run violates the contract the test will fail
 		"6",                  // generoMajor
 		true,                 // dryRun
+		"",                   // visibilityOverride — use manifest default
 	)
 	if err != nil {
 		t.Fatalf("dry-run publishPackage returned error: %v", err)
@@ -114,7 +115,7 @@ func TestPublishPackageDryRunListsMetadata(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	runErr := publishPackage(m, "http://127.0.0.1:1", "6", true)
+	runErr := publishPackage(m, "http://127.0.0.1:1", "6", true, "")
 	_ = w.Close()
 	os.Stdout = old
 	var buf bytes.Buffer

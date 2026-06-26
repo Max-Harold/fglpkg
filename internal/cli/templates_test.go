@@ -151,7 +151,7 @@ func TestParsePublishFlags(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dry, ci, err := parsePublishFlags(tc.args)
+			dry, ci, _, err := parsePublishFlags(tc.args)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for %v", tc.args)

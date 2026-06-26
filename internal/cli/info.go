@@ -48,7 +48,7 @@ func cmdInfo(args []string) error {
 
 	versions, err := registry.FetchVersionList(name)
 	if err != nil {
-		return err
+		return privateHint(err, name)
 	}
 	if len(versions.Versions) == 0 {
 		return fmt.Errorf("package %q has no published versions", name)

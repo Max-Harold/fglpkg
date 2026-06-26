@@ -391,6 +391,29 @@ Authentication uses the same OAuth/PAT bearer as the other consumer commands
 (`FGLPKG_TOKEN` overrides stored credentials). No GitHub token is involved in
 publishing.
 
+### Private Packages
+
+Packages are **public by default**. To restrict a package to members of your tenant, set `"visibility": "private"` in `fglpkg.json` before the first publish:
+
+```json
+{
+  "name": "internal-utils",
+  "version": "1.0.0",
+  "visibility": "private"
+}
+```
+
+Visibility is recorded once when the package is first created on the registry and ignored on subsequent publishes — you cannot change it after the fact via `fglpkg publish`.
+
+Consumers trying to install a private package must be logged in as a member of the owning tenant:
+
+```bash
+fglpkg login          # authenticate first
+fglpkg install internal-utils
+```
+
+An unauthenticated or unauthorised `install` will receive a 404 (the registry does not reveal that the package exists).
+
 ### Genero Version Variants
 
 Each package version can have multiple builds, one per Genero major version. When you publish, fglpkg detects your local Genero version and uploads it as a named variant:
