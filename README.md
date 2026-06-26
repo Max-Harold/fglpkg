@@ -170,6 +170,7 @@ eval "$(fglpkg env --global)"
   "description": "POI API for Genero BDL",
   "author": "Jane Developer",
   "license": "MIT",
+  "visibility": "public",
   "root": "com/fourjs/poiapi",
   "genero": "^4.0.0",
   "main": "PoiApi.42m",
@@ -208,6 +209,7 @@ eval "$(fglpkg env --global)"
 | `devDependencies` | No | Test / tooling deps (fgl + java), skipped with `--production` |
 | `optionalDependencies` | No | Attempted like prod, failures emit a warning instead of aborting |
 | `programs` | No | List of module names with MAIN blocks (e.g., `["PoiConvert"]`) |
+| `visibility` | No | Who can see this package on the registry: `"public"` (default) or `"private"`. Defaults to `"public"` if omitted — set `"private"` explicitly to restrict access. Applied on first publish only; ignored on subsequent publishes. |
 | `scripts` | No | Custom script definitions |
 
 ## Environment Variables
@@ -380,7 +382,7 @@ Publishing is **additive and reviewed**: a freshly published version is marked
 
 The publish flow:
 1. Builds a zip from the directory specified by `root` (or `.`), collecting files matching `files` patterns (default: `*.42m`, `*.42f`, `*.sch`) plus any declared `bin` scripts and `docs`, and SHA256s it.
-2. `POST /registry/packages` — creates the package slug on first publish (a `409` means it already exists, which is fine). New packages carry the manifest's `visibility` field (`public` | `private`, default `public`).
+2. `POST /registry/packages` — creates the package slug on first publish (a `409` means it already exists, which is fine). New packages carry the manifest's `visibility` field. If `visibility` is omitted from `fglpkg.json`, fglpkg defaults to `"public"` — this is intentional (npm-style: public unless you opt out). To publish a private package, set `"visibility": "private"` explicitly. Visibility is set once on first publish and ignored on subsequent publishes.
 3. `POST /registry/packages/:slug/versions` — creates the version (a `409` means the version already exists; publish proceeds to add a new variant to it).
 4. `PUT /registry/packages/:slug/versions/:version/artifacts/:variant` — streams the zip body; the registry computes size + checksum and stores it in R2.
 5. `POST /registry/packages/:slug/versions/:version/submit` — marks the version pending for admin review.
