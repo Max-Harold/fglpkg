@@ -255,6 +255,9 @@ fglpkg install --global                  # Force install to ~/.fglpkg/
 fglpkg install --local                   # Force install to .fglpkg/
 fglpkg remove myutils                    # Remove a package (any scope)
 fglpkg update                            # Re-resolve and update all dependencies
+fglpkg migrate oldpkg newpkg             # Swap oldpkg for newpkg (keeps its scope)
+fglpkg migrate oldpkg newpkg@2.0.0       # Swap to a specific version of newpkg
+fglpkg migrate oldpkg newpkg --dry-run   # Preview the swap without writing
 fglpkg list                              # List installed packages
 fglpkg env                               # Print export statements (auto-detects scope)
 fglpkg env --global                      # Print exports for all global packages

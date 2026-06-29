@@ -11,7 +11,7 @@ import (
 // drift cost is low, and static lists produce simpler completion scripts
 // than introspecting the CLI at runtime.
 var completionCommands = []string{
-	"init", "install", "remove", "update", "list", "env", "search",
+	"init", "install", "remove", "update", "migrate", "list", "env", "search",
 	"publish", "pack", "unpublish", "login", "logout", "whoami",
 	"owner", "token", "config", "workspace", "ws", "run", "bdl",
 	"docs", "version", "info", "view", "outdated", "audit",

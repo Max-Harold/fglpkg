@@ -82,6 +82,8 @@ func Execute() error {
 		return cmdRemove(args)
 	case "update":
 		return cmdUpdate(args)
+	case "migrate":
+		return cmdMigrate(args)
 	case "list":
 		return cmdList(args)
 	case "env":
@@ -2268,6 +2270,7 @@ COMMANDS:
   install [pkg...]  Install all dependencies (or add specific packages)
   remove <pkg>      Remove a package
   update            Re-resolve and update all dependencies
+  migrate <o> <n>   Swap dependency <o> for <n>[@ver] (--dry-run to preview)
   list              List installed packages
   env               Print environment variable exports
   search <term>     Search the registry (use --all to list every package)
@@ -2299,7 +2302,7 @@ COMMANDS:
                     (bump = patch|minor|major|prerelease|<semver>, add --git to tag)
   help              Show this help
 
-FLAGS (for install, remove, update, list, env):
+FLAGS (for install, remove, update, migrate, list, env):
   --local, -l       Force local project directory (.fglpkg/)
   --global, -g      Force global home directory (~/.fglpkg/)
   (default)         Auto-detect: local if .fglpkg/ or fglpkg.json exists
