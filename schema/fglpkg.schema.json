@@ -11,6 +11,10 @@
       "type": "string",
       "description": "Optional schema reference so editors can provide autocomplete and validation."
     },
+    "type": {
+      "type": "string",
+      "description": "Deprecated, accepted-but-ignored. Older manifests set this to \"webcomponent\" to flag a pure-WC package; the kind is now derived from the presence of `webcomponents` and BDL fields. Safe to omit on new manifests."
+    },
     "name": {
       "type": "string",
       "description": "Package name. Must be unique within a registry; conventionally lowercase with no spaces.",
@@ -83,6 +87,16 @@
       "type": "array",
       "description": "Module names (without .42m) that declare MAIN blocks and can be launched via `fglpkg bdl`.",
       "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "webcomponents": {
+      "type": "array",
+      "description": "COMPONENTTYPE names this package provides. A package may declare webcomponents alongside BDL files to ship a BDL wrapper paired with its companion webcomponent. Each name must match the Genero COMPONENTTYPE lexical rule and correspond to a webcomponents/<NAME>/ source directory.",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "minItems": 1,
       "uniqueItems": true
     },
     "hooks": {

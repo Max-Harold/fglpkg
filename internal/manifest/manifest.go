@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/4js-mikefolcher/fglpkg/internal/semver"
 )
+
+// componentTypeName matches the Genero COMPONENTTYPE lexical rule:
+// alphanumeric leading character (digit-leading names like "3DChart" are
+// valid) followed by letters, digits, underscore, or hyphen.
+var componentTypeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
 const Filename = "fglpkg.json"
 
@@ -20,7 +26,13 @@ type Manifest struct {
 	// (`"$schema": "https://.../fglpkg.schema.json"`). It is not validated
 	// or used by fglpkg itself; the field exists only so DisallowUnknownFields
 	// does not reject manifests that opt into editor tooling.
-	Schema      string `json:"$schema,omitempty"`
+	Schema string `json:"$schema,omitempty"`
+	// Type is accepted-but-ignored for backwards compatibility with older
+	// manifests that explicitly declared `"type": "webcomponent"`. Package
+	// kind is now derived from the presence of Webcomponents and BDL
+	// fields — see specs/webcomponent-packages.md. The field is preserved
+	// on round-trip but plays no role in validation, packing, or publish.
+	Type        string `json:"type,omitempty"`
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	Description string `json:"description,omitempty"`
@@ -57,10 +69,43 @@ type Manifest struct {
 	Bin                  map[string]string `json:"bin,omitempty"`      // command name -> script path
 	Docs                 []string          `json:"docs,omitempty"`     // glob patterns for doc files
 	Programs             []string          `json:"programs,omitempty"` // modules with MAIN blocks (e.g. "PoiConvert")
+	// Webcomponents lists the COMPONENTTYPE names this package provides.
+	// Required (and non-empty) when Type is KindWebcomponent; forbidden
+	// otherwise. Each name matches Genero's COMPONENTTYPE lexical rule and
+	// corresponds to a directory webcomponents/<NAME>/ in the source tree.
+	Webcomponents []string `json:"webcomponents,omitempty"`
 	// Hooks declare lifecycle steps to run on well-known events. Each value
 	// is an ordered list of declarative operations from a fixed vocabulary
 	// (see HookOp). Arbitrary shell commands are intentionally not supported.
 	Hooks Hooks `json:"hooks,omitempty"`
+}
+
+// HasWebcomponents reports whether the manifest declares one or more
+// webcomponents. Used by the pack and publish flows to decide whether to
+// run the webcomponent walker and which variant tag to use.
+func (m *Manifest) HasWebcomponents() bool {
+	return len(m.Webcomponents) > 0
+}
+
+// HasBDLContent reports whether the manifest declares any BDL-side assets
+// — compiled modules, programs, bin scripts, Java JARs, or an explicit
+// `files` / `root` declaration that targets BDL source. This is the
+// signal that triggers the per-Genero-major variant fan-out at publish
+// time. A manifest with only Webcomponents declared returns false; a
+// manifest pairing a BDL wrapper with a webcomponent returns true.
+func (m *Manifest) HasBDLContent() bool {
+	if m.Main != "" || m.Root != "" {
+		return true
+	}
+	if len(m.Files) > 0 || len(m.Programs) > 0 || len(m.Bin) > 0 {
+		return true
+	}
+	for _, scope := range []Scope{ScopeProd, ScopeDev, ScopeOptional} {
+		if len(m.bucket(scope).Java) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Hooks maps a lifecycle event name to the ordered list of operations to
@@ -548,6 +593,9 @@ func (m *Manifest) Validate() error {
 	if m.Version == "" {
 		return fmt.Errorf("manifest missing required field: version")
 	}
+	if err := m.validateWebcomponentNames(); err != nil {
+		return err
+	}
 	if m.GeneroConstraint != "" && m.GeneroConstraint != "*" {
 		if _, err := semver.ParseConstraint(m.GeneroConstraint); err != nil {
 			return fmt.Errorf("invalid genero constraint %q: %w", m.GeneroConstraint, err)
@@ -634,6 +682,30 @@ func (m *Manifest) ValidateForPublish() error {
 	}
 	return fmt.Errorf("manifest is not ready to publish:\n%s",
 		strings.Join(missing, "\n"))
+}
+
+// validateWebcomponentNames enforces the COMPONENTTYPE naming rules on
+// every entry in m.Webcomponents — each must match the Genero
+// COMPONENTTYPE lexical rule and be unique within the list. Empty lists
+// are valid (the package simply has no webcomponents).
+func (m *Manifest) validateWebcomponentNames() error {
+	if len(m.Webcomponents) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(m.Webcomponents))
+	for _, name := range m.Webcomponents {
+		if !componentTypeName.MatchString(name) {
+			return fmt.Errorf(
+				`invalid COMPONENTTYPE %q in "webcomponents": must match %s`,
+				name, componentTypeName,
+			)
+		}
+		if seen[name] {
+			return fmt.Errorf(`duplicate COMPONENTTYPE %q in "webcomponents"`, name)
+		}
+		seen[name] = true
+	}
+	return nil
 }
 
 // validateHookOp enforces per-operation required fields and the shared

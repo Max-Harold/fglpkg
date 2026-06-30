@@ -2,6 +2,7 @@ package installer
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,11 +28,12 @@ type InstalledPackage struct {
 
 // Installer manages package installation into the fglpkg home directory.
 type Installer struct {
-	home          string // e.g. ~/.fglpkg
-	packagesDir   string // ~/.fglpkg/packages
-	jarsDir       string // ~/.fglpkg/jars
-	githubToken   string // GitHub PAT for downloading from private GitHub Releases
-	registryToken string // bearer for the consumer registry when it serves zips directly
+	home             string // e.g. ~/.fglpkg
+	packagesDir      string // ~/.fglpkg/packages
+	jarsDir          string // ~/.fglpkg/jars
+	webcomponentsDir string // ~/.fglpkg/webcomponents
+	githubToken      string // GitHub PAT for downloading from private GitHub Releases
+	registryToken    string // bearer for the consumer registry when it serves zips directly
 }
 
 // New creates an Installer rooted at home.
@@ -43,11 +45,12 @@ type Installer struct {
 //     behind auth). Pass "" for anonymous fetches.
 func New(home, githubToken, registryToken string) *Installer {
 	return &Installer{
-		home:          home,
-		packagesDir:   filepath.Join(home, "packages"),
-		jarsDir:       filepath.Join(home, "jars"),
-		githubToken:   githubToken,
-		registryToken: registryToken,
+		home:             home,
+		packagesDir:      filepath.Join(home, "packages"),
+		jarsDir:          filepath.Join(home, "jars"),
+		webcomponentsDir: filepath.Join(home, "webcomponents"),
+		githubToken:      githubToken,
+		registryToken:    registryToken,
 	}
 }
 
@@ -85,7 +88,7 @@ func (i *Installer) InstallAllWithOptions(m *manifest.Manifest, projectDir strin
 		if err != nil {
 			fmt.Printf("warning: cannot read lock file: %v — re-resolving\n", err)
 		} else {
-			vr := lf.Validate(m, gv.String(), i.packagesDir)
+			vr := lf.Validate(m, gv.String(), i.packagesDir, i.webcomponentsDir)
 			if vr.NeedsResolve() {
 				fmt.Printf("Lock file is stale (%v) — re-resolving...\n", vr.ManifestMismatch)
 			} else {
@@ -142,10 +145,11 @@ func (i *Installer) InstallAllWithOptions(m *manifest.Manifest, projectDir strin
 func (i *Installer) installFromLock(lf *lockfile.LockFile, opts Options) error {
 	var pkgs []lockfile.LockedPackage
 	var jars []lockfile.LockedJAR
+	var wcs []lockfile.LockedWebcomponent
 	if opts.Production {
-		pkgs, jars = lf.FilterForProduction()
+		pkgs, jars, wcs = lf.FilterForProduction()
 	} else {
-		pkgs, jars = lf.ToInstallList()
+		pkgs, jars, wcs = lf.ToInstallList()
 	}
 
 	// Filter packages that are already on disk so the parallel phase
@@ -173,6 +177,28 @@ func (i *Installer) installFromLock(lf *lockfile.LockFile, opts Options) error {
 			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
 		}
 		printSync("  ✓ %s@%s\n", pkg.Name, pkg.Version)
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// Webcomponent packages — install in parallel after the BDL pass.
+	// A locked webcomponent entry is considered "already installed" when
+	// any of its COMPONENTTYPE dirs are present; on a re-install we always
+	// re-extract to refresh the contents anyway, so this gate just keeps
+	// the no-op-fast-path from repeating itself.
+	if err := runParallel(wcs, cap, func(wc lockfile.LockedWebcomponent) error {
+		info := &registry.PackageInfo{
+			Name:        wc.Name,
+			Version:     wc.Version,
+			DownloadURL: wc.DownloadURL,
+			Checksum:    wc.Checksum,
+			Variant:     "webcomponent",
+		}
+		if err := i.Install(info); err != nil {
+			return fmt.Errorf("failed to install webcomponent %s: %w", wc.Name, err)
+		}
+		printSync("  ✓ %s@%s (webcomponent)\n", wc.Name, wc.Version)
 		return nil
 	}); err != nil {
 		return err
@@ -219,6 +245,7 @@ func (i *Installer) installFromPlan(plan *resolver.Plan) error {
 			Version:     pkg.Version.String(),
 			DownloadURL: pkg.DownloadURL,
 			Checksum:    pkg.Checksum,
+			Variant:     pkg.Variant,
 		}
 		if err := i.Install(info); err != nil {
 			if pkg.Scope == manifest.ScopeOptional {
@@ -229,11 +256,15 @@ func (i *Installer) installFromPlan(plan *resolver.Plan) error {
 		}
 		// Required-by hint joins the completion line so it doesn't
 		// race onto a separate line from a sibling worker.
+		kindHint := ""
+		if pkg.IsWebcomponent() {
+			kindHint = " (webcomponent)"
+		}
 		if len(pkg.RequiredBy) > 0 {
-			printSync("  ✓ %s@%s  (required by: %s)\n",
-				pkg.Name, pkg.Version.String(), strings.Join(pkg.RequiredBy, ", "))
+			printSync("  ✓ %s@%s%s  (required by: %s)\n",
+				pkg.Name, pkg.Version.String(), kindHint, strings.Join(pkg.RequiredBy, ", "))
 		} else {
-			printSync("  ✓ %s@%s\n", pkg.Name, pkg.Version.String())
+			printSync("  ✓ %s@%s%s\n", pkg.Name, pkg.Version.String(), kindHint)
 		}
 		return nil
 	}); err != nil {
@@ -253,8 +284,20 @@ func (i *Installer) installFromPlan(plan *resolver.Plan) error {
 	})
 }
 
-// Install downloads, verifies, and unpacks a single BDL package.
+// Install downloads, verifies, and unpacks a single package — dispatching
+// to the BDL or webcomponent install layout based on info.Variant.
 func (i *Installer) Install(info *registry.PackageInfo) error {
+	if info.Variant == "webcomponent" {
+		return i.installWebcomponent(info)
+	}
+	return i.installBDL(info)
+}
+
+// installBDL is the BDL (or mixed) package install path: extract the zip
+// into .fglpkg/packages/<name>/, splitting off any webcomponent bundles
+// declared in the in-zip manifest into .fglpkg/webcomponents/<NAME>/, and
+// make bin scripts executable.
+func (i *Installer) installBDL(info *registry.PackageInfo) error {
 	if err := i.ensureDirs(); err != nil {
 		return err
 	}
@@ -279,11 +322,20 @@ func (i *Installer) Install(info *registry.PackageInfo) error {
 	}
 	tmp.Close()
 
+	// Peek at the in-zip manifest before extracting so we know which
+	// top-level directories are COMPONENTTYPE bundles (need to route to
+	// .fglpkg/webcomponents/) vs. ordinary BDL paths (extract into
+	// .fglpkg/packages/<name>/). Pure-BDL packages return an empty list.
+	wcNames, err := readWebcomponentsFromZip(tmpName)
+	if err != nil {
+		return fmt.Errorf("cannot read manifest from zip: %w", err)
+	}
+
 	destDir := filepath.Join(i.packagesDir, info.Name)
 	if err := os.RemoveAll(destDir); err != nil {
 		return fmt.Errorf("cannot clean existing package dir: %w", err)
 	}
-	if err := extractZip(tmpName, destDir); err != nil {
+	if err := extractZipRouted(tmpName, destDir, i.webcomponentsDir, wcNames); err != nil {
 		return err
 	}
 
@@ -295,6 +347,39 @@ func (i *Installer) Install(info *registry.PackageInfo) error {
 		}
 	}
 	return nil
+}
+
+// installWebcomponent downloads, verifies, and unpacks a webcomponent
+// package. Unlike BDL packages — which extract to their own subdir under
+// .fglpkg/packages/<name>/ — webcomponent bundles drop straight into
+// .fglpkg/webcomponents/<COMPONENTTYPE>/ so Genero finds them via
+// FGLIMAGEPATH/WEB_COMPONENT_DIRECTORY without an extra path segment. The
+// in-zip layout already has the COMPONENTTYPE/ prefix (the pack step
+// strips the leading "webcomponents/"), so a direct extraction is correct.
+//
+// The package's fglpkg.json is intentionally not extracted to disk —
+// multiple webcomponent packages would collide on it. The component names
+// are discoverable from the directory listing alone.
+func (i *Installer) installWebcomponent(info *registry.PackageInfo) error {
+	if err := i.ensureDirs(); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp("", "fglpkg-*.zip")
+	if err != nil {
+		return fmt.Errorf("cannot create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	downloadURL := registry.AbsoluteDownloadURL(info.DownloadURL)
+	if err := downloadAndVerify(downloadURL, info.Checksum, info.Name, tmp, i.githubToken, i.registryToken); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Close()
+
+	return extractWebcomponentZip(tmpName, i.webcomponentsDir)
 }
 
 // InstallJar downloads and verifies a Java JAR into the jars directory.
@@ -363,6 +448,10 @@ func (i *Installer) List() ([]InstalledPackage, error) {
 
 // PackagesDir returns the path where BDL packages are installed.
 func (i *Installer) PackagesDir() string { return i.packagesDir }
+
+// WebcomponentsDir is the directory holding installed webcomponent bundles,
+// one subdirectory per COMPONENTTYPE.
+func (i *Installer) WebcomponentsDir() string { return i.webcomponentsDir }
 
 // JarsDir returns the path where Java JARs are stored.
 func (i *Installer) JarsDir() string { return i.jarsDir }
@@ -442,7 +531,7 @@ func downloadAndVerify(url, expectedChecksum, name string, w io.Writer, githubTo
 // ─── Zip extraction ───────────────────────────────────────────────────────────
 
 func (i *Installer) ensureDirs() error {
-	for _, d := range []string{i.packagesDir, i.jarsDir} {
+	for _, d := range []string{i.packagesDir, i.jarsDir, i.webcomponentsDir} {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return fmt.Errorf("cannot create directory %s: %w", d, err)
 		}
@@ -464,6 +553,108 @@ func makeBinScriptsExecutable(pkgDir string, m *manifest.Manifest) error {
 		}
 		if err := os.Chmod(fullPath, info.Mode()|0111); err != nil {
 			return fmt.Errorf("cannot chmod %s: %w", fullPath, err)
+		}
+	}
+	return nil
+}
+
+// readWebcomponentsFromZip opens the zip at zipPath, reads fglpkg.json
+// from its root, and returns the manifest's Webcomponents list. A missing
+// manifest or unrecognised JSON yields an empty list and no error — the
+// caller treats the install as pure BDL.
+func readWebcomponentsFromZip(zipPath string) ([]string, error) {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	for _, f := range r.File {
+		if filepath.ToSlash(f.Name) != manifest.Filename {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		// Use a partial decode so unknown/new manifest fields don't
+		// reject the read here (the resolver and pack flow do strict
+		// validation; this is just a routing lookup).
+		var partial struct {
+			Webcomponents []string `json:"webcomponents"`
+		}
+		if err := json.Unmarshal(data, &partial); err != nil {
+			return nil, fmt.Errorf("manifest in zip is not valid JSON: %w", err)
+		}
+		return partial.Webcomponents, nil
+	}
+	return nil, nil
+}
+
+// extractZipRouted unpacks a zip into destDir like extractZip, but if
+// wcNames is non-empty it diverts any entry whose first path component
+// matches one of those names to webcomponentsDir/<COMPONENTTYPE>/...
+// instead. Used by mixed packages that ship BDL files alongside one or
+// more webcomponent bundles in a single artifact.
+//
+// Each diverted COMPONENTTYPE directory is cleared at the destination
+// before extraction so a re-install does not leave stale files behind.
+func extractZipRouted(zipPath, destDir, webcomponentsDir string, wcNames []string) error {
+	if len(wcNames) == 0 {
+		return extractZip(zipPath, destDir)
+	}
+	wcSet := make(map[string]bool, len(wcNames))
+	for _, n := range wcNames {
+		wcSet[n] = true
+	}
+
+	// Clear any pre-existing install of these webcomponent dirs.
+	for _, n := range wcNames {
+		if err := os.RemoveAll(filepath.Join(webcomponentsDir, n)); err != nil {
+			return fmt.Errorf("cannot clean existing webcomponent dir %s: %w", n, err)
+		}
+	}
+
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("cannot open zip %s: %w", zipPath, err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		clean := filepath.Clean(f.Name)
+		if strings.HasPrefix(clean, "..") {
+			return fmt.Errorf("unsafe path in zip: %s", f.Name)
+		}
+		slashed := filepath.ToSlash(clean)
+		top := strings.SplitN(slashed, "/", 2)[0]
+
+		var target string
+		if wcSet[top] {
+			// Webcomponent bundle — extract straight into the
+			// webcomponents dir, preserving the COMPONENTTYPE prefix.
+			target = filepath.Join(webcomponentsDir, clean)
+		} else {
+			// BDL content (or manifest, root docs) — stays inside
+			// the package's own directory.
+			target = filepath.Join(destDir, clean)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := writeZipEntry(f, target); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -492,6 +683,73 @@ func extractZip(zipPath, destDir string) error {
 			continue
 		}
 
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := writeZipEntry(f, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// extractWebcomponentZip unpacks a webcomponent zip into destDir
+// (typically .fglpkg/webcomponents/). Entries at the zip root that are
+// not a COMPONENTTYPE/ directory are skipped — most importantly the
+// publisher's fglpkg.json, which would otherwise collide between multiple
+// installed webcomponent packages. Each top-level <COMPONENTTYPE>/ subtree
+// is first removed at destDir/<COMPONENTTYPE>/ so a reinstall replaces
+// stale files cleanly.
+func extractWebcomponentZip(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("cannot open zip %s: %w", zipPath, err)
+	}
+	defer r.Close()
+
+	// First pass: identify each top-level COMPONENTTYPE/ dir we will touch
+	// and clear any pre-existing install so a re-install does not leave
+	// stale files behind.
+	componentDirs := map[string]bool{}
+	for _, f := range r.File {
+		clean := filepath.Clean(f.Name)
+		if strings.HasPrefix(clean, "..") {
+			return fmt.Errorf("unsafe path in zip: %s", f.Name)
+		}
+		// Top-level entries that contain no slash are not part of a
+		// component bundle — typically fglpkg.json or a stray doc file
+		// (which lives at the project root). Skip them; the manifest
+		// is intentionally not extracted.
+		if !strings.ContainsRune(clean, filepath.Separator) && !strings.ContainsRune(clean, '/') {
+			continue
+		}
+		top := strings.SplitN(filepath.ToSlash(clean), "/", 2)[0]
+		componentDirs[top] = true
+	}
+	for top := range componentDirs {
+		if err := os.RemoveAll(filepath.Join(destDir, top)); err != nil {
+			return fmt.Errorf("cannot clean existing component dir %s: %w", top, err)
+		}
+	}
+
+	for _, f := range r.File {
+		clean := filepath.Clean(f.Name)
+		if strings.HasPrefix(clean, "..") {
+			return fmt.Errorf("unsafe path in zip: %s", f.Name)
+		}
+		// Skip zip-root files (manifest, root docs) — only COMPONENTTYPE
+		// subtrees install to disk.
+		slashed := filepath.ToSlash(clean)
+		if !strings.Contains(slashed, "/") {
+			continue
+		}
+		target := filepath.Join(destDir, clean)
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return err
 		}
