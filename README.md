@@ -261,7 +261,6 @@ fglpkg publish --dry-run                 # Preview the publish calls, no network
 fglpkg publish --ci                      # Non-interactive publish (CI): needs FGLPKG_TOKEN
 fglpkg publish --private                 # Publish as private (overrides fglpkg.json visibility)
 fglpkg publish --public                  # Publish as public (overrides fglpkg.json visibility)
-fglpkg unpublish pkg@1.0.0               # Remove a published version
 
 # Authentication
 fglpkg login                             # Save registry + GitHub credentials
