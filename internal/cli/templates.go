@@ -67,7 +67,6 @@ var templates = []projectTemplate{
 		name:    "webcomponent",
 		summary: "Genero webcomponent package (html/css/js bundle published as a COMPONENTTYPE)",
 		apply: func(m *manifest.Manifest) {
-			m.Type = manifest.KindWebcomponent
 			m.Webcomponents = []string{"MyWidget"}
 			m.Docs = []string{"README.md"}
 		},

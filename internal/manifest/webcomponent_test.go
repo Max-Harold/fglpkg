@@ -10,36 +10,60 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
 )
 
-func TestEffectiveKindDefaultsToBDL(t *testing.T) {
-	m := &manifest.Manifest{Name: "p", Version: "1.0.0"}
-	if got := m.EffectiveKind(); got != manifest.KindBDL {
-		t.Fatalf("EffectiveKind() with empty Type = %q, want %q", got, manifest.KindBDL)
+// HasWebcomponents reports presence/absence of declared webcomponents.
+func TestHasWebcomponents(t *testing.T) {
+	none := &manifest.Manifest{Name: "p", Version: "1.0.0"}
+	if none.HasWebcomponents() {
+		t.Error("manifest with no webcomponents reported HasWebcomponents = true")
+	}
+	some := &manifest.Manifest{
+		Name: "p", Version: "1.0.0",
+		Webcomponents: []string{"MyWidget"},
+	}
+	if !some.HasWebcomponents() {
+		t.Error("manifest with webcomponents reported HasWebcomponents = false")
 	}
 }
 
-func TestEffectiveKindRespectsExplicit(t *testing.T) {
-	m := &manifest.Manifest{Name: "p", Version: "1.0.0", Type: manifest.KindWebcomponent,
-		Webcomponents: []string{"MyWidget"}}
-	if got := m.EffectiveKind(); got != manifest.KindWebcomponent {
-		t.Fatalf("EffectiveKind() = %q, want %q", got, manifest.KindWebcomponent)
+// HasBDLContent is the signal that triggers per-Genero variant fan-out.
+// Pure-WC manifests must report false; any BDL marker must flip it true.
+func TestHasBDLContent(t *testing.T) {
+	pureWC := &manifest.Manifest{
+		Name: "p", Version: "1.0.0",
+		Webcomponents: []string{"MyWidget"},
+	}
+	if pureWC.HasBDLContent() {
+		t.Error("pure-WC manifest reported HasBDLContent = true")
+	}
+
+	cases := map[string]func(*manifest.Manifest){
+		"main":             func(m *manifest.Manifest) { m.Main = "Entry.42m" },
+		"programs":         func(m *manifest.Manifest) { m.Programs = []string{"Main"} },
+		"bin":              func(m *manifest.Manifest) { m.Bin = map[string]string{"go": "run.sh"} },
+		"root":             func(m *manifest.Manifest) { m.Root = "src" },
+		"files":            func(m *manifest.Manifest) { m.Files = []string{"*.42m"} },
+		"dependencies-java": func(m *manifest.Manifest) {
+			m.Dependencies.Java = []manifest.JavaDependency{{GroupID: "g", ArtifactID: "a", Version: "1"}}
+		},
+	}
+	for name, mut := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := &manifest.Manifest{Name: "p", Version: "1.0.0"}
+			mut(m)
+			if !m.HasBDLContent() {
+				t.Errorf("%s should have made HasBDLContent return true", name)
+			}
+		})
 	}
 }
 
-func TestValidateWebcomponentRequiresList(t *testing.T) {
-	m := &manifest.Manifest{Name: "p", Version: "1.0.0", Type: manifest.KindWebcomponent}
-	err := m.Validate()
-	if err == nil || !strings.Contains(err.Error(), "must list at least one COMPONENTTYPE") {
-		t.Fatalf("expected COMPONENTTYPE-required error, got %v", err)
-	}
-}
-
+// COMPONENTTYPE names must match the documented lexical rule.
 func TestValidateWebcomponentNameFormat(t *testing.T) {
 	cases := []string{"", "has space", "has/slash", "-leading", "name.dot", "name!bang"}
 	for _, bad := range cases {
 		t.Run(bad, func(t *testing.T) {
 			m := &manifest.Manifest{
 				Name: "p", Version: "1.0.0",
-				Type:          manifest.KindWebcomponent,
 				Webcomponents: []string{bad},
 			}
 			if err := m.Validate(); err == nil {
@@ -49,10 +73,19 @@ func TestValidateWebcomponentNameFormat(t *testing.T) {
 	}
 }
 
+func TestValidateWebcomponentAcceptsDigitLeading(t *testing.T) {
+	m := &manifest.Manifest{
+		Name: "p", Version: "1.0.0",
+		Webcomponents: []string{"3DChart"},
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("3DChart should be valid: %v", err)
+	}
+}
+
 func TestValidateWebcomponentDuplicateName(t *testing.T) {
 	m := &manifest.Manifest{
 		Name: "p", Version: "1.0.0",
-		Type:          manifest.KindWebcomponent,
 		Webcomponents: []string{"Chart", "Chart"},
 	}
 	err := m.Validate()
@@ -61,75 +94,33 @@ func TestValidateWebcomponentDuplicateName(t *testing.T) {
 	}
 }
 
-func TestValidateWebcomponentForbidsBDLFields(t *testing.T) {
-	base := func() *manifest.Manifest {
-		return &manifest.Manifest{
-			Name: "p", Version: "1.0.0",
-			Type:          manifest.KindWebcomponent,
-			Webcomponents: []string{"MyWidget"},
-		}
-	}
-	cases := []struct {
-		name string
-		mut  func(*manifest.Manifest)
-		hint string
-	}{
-		{"main", func(m *manifest.Manifest) { m.Main = "Entry.42m" }, `"main"`},
-		{"programs", func(m *manifest.Manifest) { m.Programs = []string{"Main"} }, `"programs"`},
-		{"bin", func(m *manifest.Manifest) { m.Bin = map[string]string{"go": "run.sh"} }, `"bin"`},
-		{"root", func(m *manifest.Manifest) { m.Root = "src" }, `"root"`},
-		{"dependencies.java", func(m *manifest.Manifest) {
-			m.Dependencies.Java = []manifest.JavaDependency{{GroupID: "g", ArtifactID: "a", Version: "1"}}
-		}, `"dependencies.java"`},
-		{"devDependencies.java", func(m *manifest.Manifest) {
-			m.DevDependencies.Java = []manifest.JavaDependency{{GroupID: "g", ArtifactID: "a", Version: "1"}}
-		}, `"devDependencies.java"`},
-		{"optionalDependencies.java", func(m *manifest.Manifest) {
-			m.OptionalDependencies.Java = []manifest.JavaDependency{{GroupID: "g", ArtifactID: "a", Version: "1"}}
-		}, `"optionalDependencies.java"`},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			m := base()
-			c.mut(m)
-			err := m.Validate()
-			if err == nil || !strings.Contains(err.Error(), c.hint) {
-				t.Fatalf("expected error mentioning %s, got %v", c.hint, err)
-			}
-			if !strings.Contains(err.Error(), `"webcomponent"`) {
-				t.Fatalf("error should reference the webcomponent type: %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateBDLForbidsWebcomponentsField(t *testing.T) {
-	m := &manifest.Manifest{
-		Name: "p", Version: "1.0.0",
-		// Type omitted -> defaults to bdl.
-		Webcomponents: []string{"MyWidget"},
-	}
-	err := m.Validate()
-	if err == nil || !strings.Contains(err.Error(), `"webcomponents"`) {
-		t.Fatalf("expected forbidden-webcomponents error, got %v", err)
-	}
-}
-
-func TestValidateUnknownType(t *testing.T) {
-	m := &manifest.Manifest{
-		Name: "p", Version: "1.0.0",
-		Type: manifest.PackageKind("schema"),
-	}
-	err := m.Validate()
-	if err == nil || !strings.Contains(err.Error(), "unknown package type") {
-		t.Fatalf("expected unknown-type error, got %v", err)
-	}
-}
-
-func TestValidateWebcomponentHappyPath(t *testing.T) {
+// Mixed packages — webcomponents alongside BDL fields — must validate
+// cleanly. This is the new behavior we're enabling.
+func TestValidateMixedPackage(t *testing.T) {
 	m := &manifest.Manifest{
 		Name: "chart-3d", Version: "1.0.0",
-		Type:          manifest.KindWebcomponent,
+		Description: "BDL wrapper + 3D chart widget",
+		License:     "MIT",
+		Repository:  "https://github.com/example/chart-3d",
+		Author:      "test@example.com",
+		Programs:    []string{"ChartDemo"},
+		Webcomponents: []string{"3DChart"},
+		Dependencies: manifest.Dependencies{
+			Java: []manifest.JavaDependency{{GroupID: "g", ArtifactID: "a", Version: "1"}},
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("mixed manifest should validate: %v", err)
+	}
+	if err := m.ValidateForPublish(); err != nil {
+		t.Fatalf("mixed manifest should validate for publish: %v", err)
+	}
+}
+
+// Pure-WC packages still validate when no BDL fields are present.
+func TestValidatePureWebcomponentHappyPath(t *testing.T) {
+	m := &manifest.Manifest{
+		Name: "chart-3d", Version: "1.0.0",
 		Description:   "3D chart widget",
 		License:       "MIT",
 		Webcomponents: []string{"3DChart", "Heatmap"},
@@ -142,11 +133,42 @@ func TestValidateWebcomponentHappyPath(t *testing.T) {
 	}
 }
 
+// The legacy `"type": "webcomponent"` field on disk is accepted-but-ignored.
+// A round-trip preserves it for backward compatibility with older scaffolds.
+func TestTypeFieldAcceptedButIgnored(t *testing.T) {
+	dir := t.TempDir()
+	on := filepath.Join(dir, manifest.Filename)
+	const raw = `{
+  "name": "legacy-wc",
+  "version": "1.0.0",
+  "type": "webcomponent",
+  "description": "Legacy manifest",
+  "dependencies": { "fgl": {} },
+  "webcomponents": ["MyWidget"]
+}`
+	if err := os.WriteFile(on, []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m, err := manifest.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m.Type != "webcomponent" {
+		t.Errorf("Type field not preserved on load: %q", m.Type)
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("legacy manifest should validate: %v", err)
+	}
+	// HasBDLContent should be false — no BDL fields declared.
+	if m.HasBDLContent() {
+		t.Error("pure-WC manifest (with type=webcomponent on disk) reported HasBDLContent = true")
+	}
+}
+
 func TestWebcomponentManifestRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	orig := &manifest.Manifest{
 		Name: "chart-3d", Version: "1.0.0",
-		Type:          manifest.KindWebcomponent,
 		Description:   "3D chart widget",
 		Webcomponents: []string{"3DChart"},
 		Dependencies:  manifest.Dependencies{FGL: map[string]string{}},
@@ -158,25 +180,21 @@ func TestWebcomponentManifestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got.Type != manifest.KindWebcomponent {
-		t.Fatalf("Type round-trip: got %q want %q", got.Type, manifest.KindWebcomponent)
-	}
 	if len(got.Webcomponents) != 1 || got.Webcomponents[0] != "3DChart" {
 		t.Fatalf("Webcomponents round-trip: got %v", got.Webcomponents)
 	}
-	// Confirm "type" key appears in the on-disk JSON.
+	// Saved manifest must NOT inject a "type" field (we only preserve it
+	// when explicitly set on the in-memory struct).
 	data, err := os.ReadFile(filepath.Join(dir, manifest.Filename))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if !strings.Contains(string(data), `"type": "webcomponent"`) {
-		t.Fatalf("type field not serialized:\n%s", data)
+	if strings.Contains(string(data), `"type"`) {
+		t.Fatalf("did not expect `type` key in saved JSON:\n%s", data)
 	}
 }
 
-func TestBDLManifestOmitsTypeAndWebcomponents(t *testing.T) {
-	// A classic BDL manifest must not pollute the output with empty
-	// "type": "" or "webcomponents": [] keys.
+func TestBDLManifestOmitsWebcomponentsField(t *testing.T) {
 	m := &manifest.Manifest{
 		Name: "p", Version: "1.0.0",
 		Dependencies: manifest.Dependencies{FGL: map[string]string{}},
@@ -184,9 +202,6 @@ func TestBDLManifestOmitsTypeAndWebcomponents(t *testing.T) {
 	data, err := json.Marshal(m)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(data), `"type"`) {
-		t.Fatalf("expected no `type` key in BDL manifest JSON: %s", data)
 	}
 	if strings.Contains(string(data), `"webcomponents"`) {
 		t.Fatalf("expected no `webcomponents` key in BDL manifest JSON: %s", data)

@@ -876,11 +876,14 @@ func docSizeLabel(content, marker string) string {
 	return label
 }
 
-// artifactVariant returns the registry variant tag for a package: a BDL
-// package uses "genero<major>", a webcomponent package uses the literal
-// "webcomponent" (genero-version-agnostic).
+// artifactVariant returns the registry variant tag for a package:
+//   - "webcomponent" when the manifest declares webcomponents and NO BDL
+//     content (pure-WC package, genero-version-agnostic)
+//   - "genero<major>" otherwise (classic BDL, or a mixed package that
+//     pairs webcomponents with a BDL wrapper — BDL forces per-major
+//     fan-out, the WC bytes ride along inside each genero variant)
 func artifactVariant(m *manifest.Manifest, generoMajor string) string {
-	if m.EffectiveKind() == manifest.KindWebcomponent {
+	if m.HasWebcomponents() && !m.HasBDLContent() {
 		return "webcomponent"
 	}
 	return "genero" + generoMajor
@@ -915,13 +918,18 @@ func buildPackageZip(m *manifest.Manifest) ([]byte, string, error) {
 
 	added := make(map[string]bool)
 
-	switch m.EffectiveKind() {
-	case manifest.KindWebcomponent:
-		if err := collectWebcomponentFiles(zw, m, ignore, added); err != nil {
+	// Mixed packages run BOTH walkers — BDL files go in at project-relative
+	// paths; webcomponents go in at <COMPONENTTYPE>/<file> with the
+	// "webcomponents/" prefix stripped. A pure-WC manifest skips the BDL
+	// walk (HasBDLContent returns false); a pure-BDL manifest skips the
+	// webcomponent walk (HasWebcomponents returns false).
+	if m.HasBDLContent() || !m.HasWebcomponents() {
+		if err := collectBDLFiles(zw, m, ignore, added); err != nil {
 			return nil, "", err
 		}
-	default:
-		if err := collectBDLFiles(zw, m, ignore, added); err != nil {
+	}
+	if m.HasWebcomponents() {
+		if err := collectWebcomponentFiles(zw, m, ignore, added); err != nil {
 			return nil, "", err
 		}
 	}

@@ -2,6 +2,7 @@ package installer
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -292,8 +293,10 @@ func (i *Installer) Install(info *registry.PackageInfo) error {
 	return i.installBDL(info)
 }
 
-// installBDL is the classic BDL package install path: extract the zip into
-// .fglpkg/packages/<name>/ and make bin scripts executable.
+// installBDL is the BDL (or mixed) package install path: extract the zip
+// into .fglpkg/packages/<name>/, splitting off any webcomponent bundles
+// declared in the in-zip manifest into .fglpkg/webcomponents/<NAME>/, and
+// make bin scripts executable.
 func (i *Installer) installBDL(info *registry.PackageInfo) error {
 	if err := i.ensureDirs(); err != nil {
 		return err
@@ -319,11 +322,20 @@ func (i *Installer) installBDL(info *registry.PackageInfo) error {
 	}
 	tmp.Close()
 
+	// Peek at the in-zip manifest before extracting so we know which
+	// top-level directories are COMPONENTTYPE bundles (need to route to
+	// .fglpkg/webcomponents/) vs. ordinary BDL paths (extract into
+	// .fglpkg/packages/<name>/). Pure-BDL packages return an empty list.
+	wcNames, err := readWebcomponentsFromZip(tmpName)
+	if err != nil {
+		return fmt.Errorf("cannot read manifest from zip: %w", err)
+	}
+
 	destDir := filepath.Join(i.packagesDir, info.Name)
 	if err := os.RemoveAll(destDir); err != nil {
 		return fmt.Errorf("cannot clean existing package dir: %w", err)
 	}
-	if err := extractZip(tmpName, destDir); err != nil {
+	if err := extractZipRouted(tmpName, destDir, i.webcomponentsDir, wcNames); err != nil {
 		return err
 	}
 
@@ -541,6 +553,108 @@ func makeBinScriptsExecutable(pkgDir string, m *manifest.Manifest) error {
 		}
 		if err := os.Chmod(fullPath, info.Mode()|0111); err != nil {
 			return fmt.Errorf("cannot chmod %s: %w", fullPath, err)
+		}
+	}
+	return nil
+}
+
+// readWebcomponentsFromZip opens the zip at zipPath, reads fglpkg.json
+// from its root, and returns the manifest's Webcomponents list. A missing
+// manifest or unrecognised JSON yields an empty list and no error — the
+// caller treats the install as pure BDL.
+func readWebcomponentsFromZip(zipPath string) ([]string, error) {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	for _, f := range r.File {
+		if filepath.ToSlash(f.Name) != manifest.Filename {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		// Use a partial decode so unknown/new manifest fields don't
+		// reject the read here (the resolver and pack flow do strict
+		// validation; this is just a routing lookup).
+		var partial struct {
+			Webcomponents []string `json:"webcomponents"`
+		}
+		if err := json.Unmarshal(data, &partial); err != nil {
+			return nil, fmt.Errorf("manifest in zip is not valid JSON: %w", err)
+		}
+		return partial.Webcomponents, nil
+	}
+	return nil, nil
+}
+
+// extractZipRouted unpacks a zip into destDir like extractZip, but if
+// wcNames is non-empty it diverts any entry whose first path component
+// matches one of those names to webcomponentsDir/<COMPONENTTYPE>/...
+// instead. Used by mixed packages that ship BDL files alongside one or
+// more webcomponent bundles in a single artifact.
+//
+// Each diverted COMPONENTTYPE directory is cleared at the destination
+// before extraction so a re-install does not leave stale files behind.
+func extractZipRouted(zipPath, destDir, webcomponentsDir string, wcNames []string) error {
+	if len(wcNames) == 0 {
+		return extractZip(zipPath, destDir)
+	}
+	wcSet := make(map[string]bool, len(wcNames))
+	for _, n := range wcNames {
+		wcSet[n] = true
+	}
+
+	// Clear any pre-existing install of these webcomponent dirs.
+	for _, n := range wcNames {
+		if err := os.RemoveAll(filepath.Join(webcomponentsDir, n)); err != nil {
+			return fmt.Errorf("cannot clean existing webcomponent dir %s: %w", n, err)
+		}
+	}
+
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("cannot open zip %s: %w", zipPath, err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		clean := filepath.Clean(f.Name)
+		if strings.HasPrefix(clean, "..") {
+			return fmt.Errorf("unsafe path in zip: %s", f.Name)
+		}
+		slashed := filepath.ToSlash(clean)
+		top := strings.SplitN(slashed, "/", 2)[0]
+
+		var target string
+		if wcSet[top] {
+			// Webcomponent bundle — extract straight into the
+			// webcomponents dir, preserving the COMPONENTTYPE prefix.
+			target = filepath.Join(webcomponentsDir, clean)
+		} else {
+			// BDL content (or manifest, root docs) — stays inside
+			// the package's own directory.
+			target = filepath.Join(destDir, clean)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := writeZipEntry(f, target); err != nil {
+			return err
 		}
 	}
 	return nil

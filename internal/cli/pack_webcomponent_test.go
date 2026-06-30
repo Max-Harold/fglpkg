@@ -99,6 +99,85 @@ func TestBuildWebcomponentZipContents(t *testing.T) {
 	}
 }
 
+// TestBuildMixedZipContents covers a package that ships a BDL wrapper
+// alongside a webcomponent in a single artifact. The zip must include the
+// BDL files at their project-relative paths AND the COMPONENTTYPE bundle
+// at the prefix-stripped path; the manifest's webcomponents array tells
+// the installer which is which.
+func TestBuildMixedZipContents(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write("fglpkg.json", `{
+  "name": "chart-3d",
+  "version": "1.0.0",
+  "description": "BDL wrapper + 3D chart",
+  "dependencies": { "fgl": {} },
+  "programs": ["ChartDemo"],
+  "docs": ["README.md"],
+  "webcomponents": ["3DChart"]
+}`)
+	write("ChartDemo.42m", "MAIN END MAIN\n")
+	write("ChartHelper.42m", "FUNCTION show() END FUNCTION\n")
+	write("webcomponents/3DChart/3DChart.html", "<html/>")
+	write("webcomponents/3DChart/3DChart.js", "// chart js")
+	write("README.md", "# chart-3d\n")
+
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	m, err := manifest.Load(".")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	data, _, err := buildPackageZip(m)
+	if err != nil {
+		t.Fatalf("buildPackageZip: %v", err)
+	}
+
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	got := map[string]bool{}
+	for _, f := range r.File {
+		got[f.Name] = true
+	}
+
+	wantIncluded := []string{
+		"fglpkg.json",
+		"README.md",
+		"ChartDemo.42m",      // BDL file at zip root
+		"ChartHelper.42m",    // BDL file at zip root
+		"3DChart/3DChart.html", // webcomponent, prefix stripped
+		"3DChart/3DChart.js",
+	}
+	for _, w := range wantIncluded {
+		if !got[w] {
+			t.Errorf("expected %q in zip; got %v", w, got)
+		}
+	}
+	wantExcluded := []string{
+		"webcomponents/3DChart/3DChart.html",
+		"webcomponents/3DChart/3DChart.js",
+	}
+	for _, w := range wantExcluded {
+		if got[w] {
+			t.Errorf("unexpected entry %q in zip (prefix not stripped)", w)
+		}
+	}
+}
+
 // TestBuildWebcomponentZipMissingEntry fails when a declared COMPONENTTYPE
 // has no <NAME>.html entry point — that file is required by Genero's
 // webcomponent loader.
@@ -138,7 +217,10 @@ func TestBuildWebcomponentZipMissingEntry(t *testing.T) {
 	}
 }
 
-// TestArtifactVariant covers the per-kind variant tag mapping.
+// TestArtifactVariant covers the presence-based variant tag mapping:
+//   - BDL only           → "genero<N>"
+//   - WC only            → "webcomponent"
+//   - BDL + WC (mixed)   → "genero<N>" (BDL forces per-major fan-out)
 func TestArtifactVariant(t *testing.T) {
 	bdl := &manifest.Manifest{Name: "x", Version: "1.0.0"}
 	if got := artifactVariant(bdl, "6"); got != "genero6" {
@@ -146,11 +228,18 @@ func TestArtifactVariant(t *testing.T) {
 	}
 	wc := &manifest.Manifest{
 		Name: "y", Version: "1.0.0",
-		Type:          manifest.KindWebcomponent,
 		Webcomponents: []string{"W"},
 	}
 	if got := artifactVariant(wc, "6"); got != "webcomponent" {
 		t.Errorf("artifactVariant(wc) = %q; want webcomponent", got)
+	}
+	mixed := &manifest.Manifest{
+		Name: "z", Version: "1.0.0",
+		Programs:      []string{"Demo"},
+		Webcomponents: []string{"W"},
+	}
+	if got := artifactVariant(mixed, "6"); got != "genero6" {
+		t.Errorf("artifactVariant(mixed, 6) = %q; want genero6 (BDL fan-out wins)", got)
 	}
 }
 

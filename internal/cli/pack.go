@@ -50,11 +50,12 @@ func cmdPack(args []string) error {
 		return fmt.Errorf("manifest is invalid: %w", err)
 	}
 
-	// Webcomponent packages are genero-version-agnostic, so skip the
-	// (potentially expensive) runtime detection in that case. For BDL
-	// packages the detected major is still needed for the variant tag.
+	// Pure-WC packages are genero-version-agnostic, so skip the
+	// (potentially expensive) runtime detection in that case. Any BDL
+	// content (including a webcomponent that's paired with a BDL wrapper)
+	// still needs the detected major for the variant tag.
 	var generoMajor string
-	if m.EffectiveKind() != manifest.KindWebcomponent {
+	if m.HasBDLContent() || !m.HasWebcomponents() {
 		gv, err := genero.Detect()
 		if err != nil {
 			return fmt.Errorf("cannot detect Genero version: %w", err)

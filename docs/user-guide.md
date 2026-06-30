@@ -569,9 +569,15 @@ JARs are downloaded to `~/.fglpkg/jars/` and added to `CLASSPATH` by `fglpkg env
 
 ## Webcomponent Packages
 
-A webcomponent package ships a Genero `COMPONENTTYPE` — an html/css/js bundle that a form references with `WEBCOMPONENT … COMPONENTTYPE = "<name>"`. Webcomponent packages publish under their own variant (`webcomponent`), are not Genero-version-specific, and install to a parallel directory (`.fglpkg/webcomponents/`) so they coexist with BDL packages and Java JARs without colliding.
+A webcomponent package ships a Genero `COMPONENTTYPE` — an html/css/js bundle that a form references with `WEBCOMPONENT … COMPONENTTYPE = "<name>"`. Webcomponent bundles install to `.fglpkg/webcomponents/<COMPONENTTYPE>/` so they coexist with BDL packages (`.fglpkg/packages/`) and Java JARs (`.fglpkg/jars/`) without colliding.
 
-A package is either BDL **or** webcomponent — never both. A BDL library that needs a webcomponent declares it as a regular dependency under `dependencies.fgl`, and fglpkg pulls in both.
+A manifest can declare `webcomponents` **alone** (a pure-WC package) or **alongside BDL fields** (a mixed package — a BDL wrapper that ships with its companion webcomponent in a single artifact). The variant tag is picked automatically from what the manifest declares:
+
+| Manifest contains | Variant tag | When to use |
+|---|---|---|
+| Only `webcomponents` | `webcomponent` | A self-contained widget that needs no BDL helper (themes, pure UI bundles) |
+| `webcomponents` + BDL fields (`programs`, `files`, `main`, etc.) | `genero<N>` | A widget paired with a BDL convenience wrapper so consumers can just `IMPORT FGL chart_3d` |
+| BDL fields only | `genero<N>` | Classic BDL library |
 
 ### Creating a webcomponent package
 
@@ -581,11 +587,11 @@ cd mywidget
 fglpkg init --template webcomponent
 ```
 
-The template scaffolds:
+The template scaffolds a pure-WC starter:
 
 ```
 mywidget/
-├── fglpkg.json                 # type: "webcomponent", webcomponents: ["MyWidget"]
+├── fglpkg.json                 # webcomponents: ["MyWidget"]
 ├── README.md
 ├── .gitignore
 └── webcomponents/
@@ -597,13 +603,45 @@ mywidget/
 
 Rename `MyWidget` to your `COMPONENTTYPE`, update the `webcomponents` array in `fglpkg.json` to match, and fill in the HTML/CSS/JS. One package can ship multiple components — add more `webcomponents/<NAME>/` directories and list each name.
 
-### Manifest shape
+### Pairing a webcomponent with a BDL wrapper
+
+A common pattern is to ship a small BDL module that wraps the gICAPI plumbing, so callers just `IMPORT FGL chart_3d` and call a typed function like `chart_3d.show(data STRING)` instead of writing raw `WEBCOMPONENT` form code. Drop the BDL source into the project root and add the BDL fields to the same manifest:
+
+```
+mywidget/
+├── fglpkg.json                 # webcomponents + programs
+├── README.md
+├── ChartHelper.4gl             # BDL wrapper module
+└── webcomponents/
+    └── 3DChart/
+        ├── 3DChart.html
+        ├── 3DChart.css
+        └── 3DChart.js
+```
 
 ```json
 {
   "name": "chart-3d",
   "version": "1.0.0",
-  "type": "webcomponent",
+  "description": "BDL wrapper + 3D chart webcomponent",
+  "license": "MIT",
+  "repository": "https://github.com/example/chart-3d",
+  "programs": ["ChartHelper"],
+  "webcomponents": ["3DChart"],
+  "dependencies": { "fgl": {} }
+}
+```
+
+A `fglpkg publish` of this mixed manifest uploads a single `genero<N>` artifact per Genero major your machine targets (the BDL bits are version-specific; the WC rides along unchanged). On install, the BDL files land under `.fglpkg/packages/chart-3d/` and the `3DChart/` bundle lands under `.fglpkg/webcomponents/3DChart/` — consumers get both halves from one `fglpkg install`.
+
+### Manifest fields
+
+**Pure webcomponent (no BDL helper):**
+
+```json
+{
+  "name": "chart-3d",
+  "version": "1.0.0",
   "description": "3D chart widget for Genero forms",
   "license": "MIT",
   "repository": "https://github.com/4js-mikefolcher/chart-3d",
@@ -617,9 +655,9 @@ Rename `MyWidget` to your `COMPONENTTYPE`, update the `webcomponents` array in `
 ```
 
 Notes:
-- `type: "webcomponent"` is the discriminator. Omit it (or use `"bdl"`) for a classic BDL package.
-- `webcomponents` is required and must list at least one `COMPONENTTYPE` name. Each name must match `^[A-Za-z0-9][A-Za-z0-9_-]*$` (digit-leading names like `3DChart` are valid).
-- `main`, `programs`, `bin`, `root`, and any `dependencies.java` / `devDependencies.java` / `optionalDependencies.java` are **forbidden** — they are BDL-only concepts. `dependencies.fgl` is allowed (depend on other packages, BDL or webcomponent).
+- `webcomponents` is a list of `COMPONENTTYPE` names. Each must match `^[A-Za-z0-9][A-Za-z0-9_-]*$` (digit-leading names like `3DChart` are valid).
+- Mix `webcomponents` with `programs`, `main`, `files`, `bin`, `root`, or `dependencies.java` freely — fglpkg derives the package's variant tag from what's actually declared.
+- The legacy `"type": "webcomponent"` field is accepted but ignored. New manifests should omit it.
 
 ### Publishing
 
@@ -630,7 +668,7 @@ fglpkg publish --dry-run
 fglpkg publish
 ```
 
-The publish flow uploads a single artifact per version under the `webcomponent` variant (no Genero-major fan-out). The in-zip layout has the `webcomponents/` prefix stripped — so a source file at `webcomponents/3DChart/3DChart.html` is stored as `3DChart/3DChart.html` in the artifact, ready to drop into the consumer's install directory.
+The publish flow picks the variant automatically — `webcomponent` for pure-WC packages, `genero<N>` for mixed or pure-BDL. In both cases the in-zip layout has the `webcomponents/` prefix stripped — so a source file at `webcomponents/3DChart/3DChart.html` is stored as `3DChart/3DChart.html` in the artifact, ready to drop into the consumer's install directory.
 
 ### Consuming a webcomponent package
 
