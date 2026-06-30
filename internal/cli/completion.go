@@ -12,8 +12,8 @@ import (
 // than introspecting the CLI at runtime.
 var completionCommands = []string{
 	"init", "install", "remove", "update", "list", "env", "search",
-	"publish", "pack", "unpublish", "login", "logout", "whoami",
-	"owner", "token", "config", "workspace", "ws", "run", "bdl",
+	"publish", "pack", "login", "logout", "whoami",
+	"workspace", "ws", "run", "bdl",
 	"docs", "version", "info", "view", "outdated", "audit",
 	"sbom", "completion", "help",
 }

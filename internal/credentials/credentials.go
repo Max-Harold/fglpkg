@@ -157,19 +157,8 @@ func (f *File) SetGitHubToken(registryURL, githubToken string) {
 // ─── Env var resolution ──────────────────────────────────────────────────────
 
 // ConsumerEnvBearer returns the bearer to send from env on the consumer side.
-// FGLPKG_TOKEN is canonical; FGLPKG_PUBLISH_TOKEN is honoured as a back-compat
-// fallback so existing single-token CI scripts keep working.
 func ConsumerEnvBearer() string {
-	if t := strings.TrimSpace(os.Getenv("FGLPKG_TOKEN")); t != "" {
-		return t
-	}
-	return strings.TrimSpace(os.Getenv("FGLPKG_PUBLISH_TOKEN"))
-}
-
-// PublisherEnvBearer returns the bearer to send from env on the publisher
-// side. Only FGLPKG_PUBLISH_TOKEN is honoured.
-func PublisherEnvBearer() string {
-	return strings.TrimSpace(os.Getenv("FGLPKG_PUBLISH_TOKEN"))
+	return strings.TrimSpace(os.Getenv("FGLPKG_TOKEN"))
 }
 
 // ─── Bearer resolution ───────────────────────────────────────────────────────
@@ -256,10 +245,9 @@ func ForceRefresh(ctx context.Context, home, registryURL string, refresh Refresh
 }
 
 // ActivePublishBearer returns the bearer for publisher-side calls.
-// Publisher endpoints are PAT-only today, so this is much simpler than
-// ActiveBearer: env > stored PAT > stored legacy token > "".
+// env > stored PAT > stored legacy token > "".
 func ActivePublishBearer(home, registryURL string) string {
-	if t := PublisherEnvBearer(); t != "" {
+	if t := ConsumerEnvBearer(); t != "" {
 		return t
 	}
 	f, err := Load(home)
@@ -277,12 +265,11 @@ func ActivePublishBearer(home, registryURL string) string {
 }
 
 // TokenFor is the legacy single-bearer resolver. Kept for callers that
-// haven't moved to ActiveBearer / ActivePublishBearer yet. Semantics:
-// FGLPKG_PUBLISH_TOKEN env wins, else stored PAT.
+// haven't moved to ActiveBearer / ActivePublishBearer yet.
 //
 // Deprecated: prefer ActiveBearer or ActivePublishBearer.
 func TokenFor(home, registryURL string) string {
-	if t := PublisherEnvBearer(); t != "" {
+	if t := ConsumerEnvBearer(); t != "" {
 		return t
 	}
 	f, err := Load(home)
@@ -299,13 +286,8 @@ func TokenFor(home, registryURL string) string {
 	return e.Token
 }
 
-// GitHubTokenFor returns the GitHub token to use when downloading packages
-// hosted on GitHub Releases. Checks FGLPKG_GITHUB_TOKEN first, then falls
-// back to the entry's githubToken field.
+// GitHubTokenFor returns the GitHub token stored for the given registry.
 func GitHubTokenFor(home, registryURL string) string {
-	if t := os.Getenv("FGLPKG_GITHUB_TOKEN"); t != "" {
-		return t
-	}
 	f, err := Load(home)
 	if err != nil {
 		return ""

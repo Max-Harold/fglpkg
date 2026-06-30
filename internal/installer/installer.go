@@ -421,7 +421,7 @@ func downloadAndVerify(url, expectedChecksum, name string, w io.Writer, githubTo
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("HTTP 401 downloading %s: GitHub token may be missing or expired — run 'fglpkg login' or set FGLPKG_GITHUB_TOKEN", name)
+		return fmt.Errorf("HTTP 401 downloading %s: Not authorised — run 'fglpkg login' or set FGLPKG_TOKEN", name)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d downloading %s from %s", resp.StatusCode, name, url)

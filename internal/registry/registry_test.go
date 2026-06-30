@@ -247,7 +247,7 @@ func TestPublishCreateVersionSendsMetadata(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer ts.Close()
-	t.Setenv("FGLPKG_PUBLISH_REGISTRY", ts.URL)
+	t.Setenv("FGLPKG_REGISTRY", ts.URL)
 
 	meta := registry.VersionMeta{
 		Repository: "https://github.com/acme/demo",
@@ -305,7 +305,7 @@ func TestPublishCreateVersionOmitsEmptyMetadata(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer ts.Close()
-	t.Setenv("FGLPKG_PUBLISH_REGISTRY", ts.URL)
+	t.Setenv("FGLPKG_REGISTRY", ts.URL)
 
 	if err := registry.PublishCreateVersion("demo", "1.0.0", "", nil, registry.VersionMeta{}); err != nil {
 		t.Fatalf("PublishCreateVersion: %v", err)
@@ -314,35 +314,5 @@ func TestPublishCreateVersionOmitsEmptyMetadata(t *testing.T) {
 		if _, present := gotBody[k]; present {
 			t.Errorf("empty metadata should omit %q from the payload, but it was present", k)
 		}
-	}
-}
-
-// PublisherVersionList now talks to the LEGACY (fly.dev) base unconditionally
-// — env override was dropped because the legacy URL is the only place the old
-// /packages/<name>/versions endpoint exists. Tests swap registry.LegacyBase to
-// a httptest URL.
-func TestPublisherVersionListUsesLegacyBase(t *testing.T) {
-	gotPath := ""
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"name":     "demo",
-			"versions": []string{"1.0.0"},
-		})
-	}))
-	defer ts.Close()
-	prev := registry.LegacyBase
-	registry.LegacyBase = ts.URL
-	t.Cleanup(func() { registry.LegacyBase = prev })
-
-	vl, err := registry.PublisherVersionList("demo")
-	if err != nil {
-		t.Fatalf("PublisherVersionList: %v", err)
-	}
-	if gotPath != "/packages/demo/versions" {
-		t.Errorf("path = %q, want /packages/demo/versions", gotPath)
-	}
-	if len(vl.Versions) != 1 || vl.Versions[0] != "1.0.0" {
-		t.Errorf("Versions = %v, want [1.0.0]", vl.Versions)
 	}
 }
