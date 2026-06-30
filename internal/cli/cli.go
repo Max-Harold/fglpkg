@@ -22,7 +22,6 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/credentials"
 	"github.com/4js-mikefolcher/fglpkg/internal/env"
 	"github.com/4js-mikefolcher/fglpkg/internal/genero"
-	gh "github.com/4js-mikefolcher/fglpkg/internal/github"
 	"github.com/4js-mikefolcher/fglpkg/internal/hooks"
 	"github.com/4js-mikefolcher/fglpkg/internal/installer"
 	"github.com/4js-mikefolcher/fglpkg/internal/lockfile"
