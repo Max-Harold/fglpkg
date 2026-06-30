@@ -163,6 +163,7 @@ eval "$(fglpkg env --global)"
   "description": "POI API for Genero BDL",
   "author": "Jane Developer",
   "license": "MIT",
+  "visibility": "public",
   "root": "com/fourjs/poiapi",
   "genero": "^4.0.0",
   "main": "PoiApi.42m",
@@ -201,6 +202,7 @@ eval "$(fglpkg env --global)"
 | `devDependencies` | No | Test / tooling deps (fgl + java), skipped with `--production` |
 | `optionalDependencies` | No | Attempted like prod, failures emit a warning instead of aborting |
 | `programs` | No | List of module names with MAIN blocks (e.g., `["PoiConvert"]`) |
+| `visibility` | No | Who can see this package on the registry: `"public"` (default) or `"private"`. Defaults to `"public"` if omitted — set `"private"` explicitly to restrict access. Applied on first publish only; ignored on subsequent publishes. |
 | `scripts` | No | Custom script definitions |
 
 ## Environment Variables
@@ -257,6 +259,8 @@ fglpkg bdl --list                        # List available BDL programs
 fglpkg publish                           # Publish current package to registry
 fglpkg publish --dry-run                 # Preview the publish calls, no network
 fglpkg publish --ci                      # Non-interactive publish (CI): needs FGLPKG_TOKEN
+fglpkg publish --private                 # Publish as private (overrides fglpkg.json visibility)
+fglpkg publish --public                  # Publish as public (overrides fglpkg.json visibility)
 
 # Authentication
 fglpkg login                             # Save registry + GitHub credentials
@@ -303,7 +307,7 @@ Publishing is **additive and reviewed**: a freshly published version is marked
 
 The publish flow:
 1. Builds a zip from the directory specified by `root` (or `.`), collecting files matching `files` patterns (default: `*.42m`, `*.42f`, `*.sch`) plus any declared `bin` scripts and `docs`, and SHA256s it.
-2. `POST /registry/packages` — creates the package slug on first publish (a `409` means it already exists, which is fine). New packages carry the manifest's `visibility` field (`public` | `private`, default `public`).
+2. `POST /registry/packages` — creates the package slug on first publish (a `409` means it already exists, which is fine). New packages carry the manifest's `visibility` field. If `visibility` is omitted from `fglpkg.json`, fglpkg defaults to `"public"` — this is intentional (npm-style: public unless you opt out). To publish a private package, set `"visibility": "private"` explicitly. Visibility is set once on first publish and ignored on subsequent publishes.
 3. `POST /registry/packages/:slug/versions` — creates the version (a `409` means the version already exists; publish proceeds to add a new variant to it).
 4. `PUT /registry/packages/:slug/versions/:version/artifacts/:variant` — streams the zip body; the registry computes size + checksum and stores it in R2.
 5. `POST /registry/packages/:slug/versions/:version/submit` — marks the version pending for admin review.
@@ -311,6 +315,36 @@ The publish flow:
 Authentication uses the same OAuth/PAT bearer as the other consumer commands
 (`FGLPKG_TOKEN` overrides stored credentials). No GitHub token is involved in
 publishing.
+
+### Private Packages
+
+Packages are **public by default**. To restrict a package to members of your tenant, set `"visibility": "private"` in `fglpkg.json` before the first publish:
+
+```json
+{
+  "name": "internal-utils",
+  "version": "1.0.0",
+  "visibility": "private"
+}
+```
+
+Alternatively, override the manifest at publish time with the `--private` / `--public` flags (mutually exclusive). The flag takes priority over `fglpkg.json`, which takes priority over the `public` default:
+
+```bash
+fglpkg publish --private    # publish as private regardless of fglpkg.json
+fglpkg publish --public     # publish as public regardless of fglpkg.json
+```
+
+Visibility is recorded once when the package is first created on the registry and ignored on subsequent publishes — you cannot change it after the fact via `fglpkg publish`.
+
+Consumers trying to install a private package must be logged in as a member of the owning tenant:
+
+```bash
+fglpkg login          # authenticate first
+fglpkg install internal-utils
+```
+
+An unauthenticated or unauthorised `install` will receive a 404 (the registry does not reveal that the package exists).
 
 ### Genero Version Variants
 

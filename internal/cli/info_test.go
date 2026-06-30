@@ -180,6 +180,78 @@ func TestCmdInfoUsageErrors(t *testing.T) {
 
 // captureStdout redirects os.Stdout for the duration of fn and returns
 // what was written. Simple enough for single-goroutine command tests.
+func TestPrivatePackageAccessHint(t *testing.T) {
+	const tenantAToken = "tenant-a-secret"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+tenantAToken {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"slug":  "secret-pkg",
+			"owner": map[string]any{"name": "tenant-a"},
+			"versions": []map[string]any{
+				{"version": "1.0.0", "artifacts": []map[string]any{
+					{"variant": "default", "sha256": "abc123", "download_url": "http://example.com/pkg.zip"},
+				}},
+			},
+		})
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("FGLPKG_REGISTRY", ts.URL)
+
+	t.Run("tenant_a_succeeds", func(t *testing.T) {
+		t.Setenv("FGLPKG_TOKEN", tenantAToken)
+		if err := cmdInfo([]string{"secret-pkg"}); err != nil {
+			t.Errorf("tenant A should have access, got: %v", err)
+		}
+	})
+
+	t.Run("anonymous_gets_login_hint", func(t *testing.T) {
+		t.Setenv("FGLPKG_TOKEN", "")
+		err := cmdInfo([]string{"secret-pkg"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "fglpkg login") {
+			t.Errorf("expected login hint in error, got: %v", err)
+		}
+	})
+
+	t.Run("wrong_tenant_no_hint", func(t *testing.T) {
+		t.Setenv("FGLPKG_TOKEN", "tenant-b-token")
+		err := cmdInfo([]string{"secret-pkg"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if strings.Contains(err.Error(), "fglpkg login") {
+			t.Errorf("logged-in user should not get login hint, got: %v", err)
+		}
+	})
+}
+
+func TestPublicPackageAccessibleToAnonymous(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"slug":  "public-pkg",
+			"owner": map[string]any{"name": "someone"},
+			"versions": []map[string]any{
+				{"version": "1.0.0", "artifacts": []map[string]any{
+					{"variant": "default", "sha256": "def456", "download_url": "http://example.com/pub.zip"},
+				}},
+			},
+		})
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("FGLPKG_REGISTRY", ts.URL)
+	t.Setenv("FGLPKG_TOKEN", "")
+
+	if err := cmdInfo([]string{"public-pkg"}); err != nil {
+		t.Errorf("public package should be accessible anonymously, got: %v", err)
+	}
+}
+
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	orig := os.Stdout
