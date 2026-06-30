@@ -8,7 +8,6 @@ A package manager for Genero BDL projects, supporting both BDL packages and Java
 fglpkg/
 ├── cmd/
 │   ├── fglpkg/main.go              # Package manager CLI entry point
-│   ├── registry/main.go            # Registry server entry point
 │   └── build.sh                    # Cross-platform build script
 ├── internal/
 │   ├── cli/cli.go                  # Command dispatch & user interaction
@@ -19,17 +18,11 @@ fglpkg/
 │   ├── installer/installer.go      # Zip download, extraction, JAR management
 │   ├── lockfile/lockfile.go        # fglpkg.lock read/write/validate
 │   ├── checksum/checksum.go        # SHA256 streaming verification
-│   ├── credentials/                # Registry + GitHub credential storage
-│   ├── github/github.go            # GitHub Releases API client
+│   ├── credentials/                # Registry credential storage
 │   ├── workspace/workspace.go      # Monorepo workspace support
-│   ├── registry/registry.go        # Registry HTTP client
-│   └── registry/server/            # Registry HTTP server
-│       ├── server.go               # Route handlers
-│       ├── store.go                # Flat-file storage backend
-│       └── testing.go              # Test helper (NewTestServer)
+│   └── registry/registry.go        # Registry HTTP client
 ├── docs/
-│   ├── user-guide.md               # User instruction guide
-│   └── github-token-setup.md       # GitHub PAT setup instructions
+│   └── user-guide.md               # User instruction guide
 ├── .github/workflows/release.yml   # Automated release on tag push
 ├── go.mod
 └── README.md
@@ -218,11 +211,7 @@ eval "$(fglpkg env --global)"
 |---|---|
 | `FGLPKG_HOME` | Override default `~/.fglpkg` home |
 | `FGLPKG_REGISTRY` | Registry URL — used by `install`, `search`, `audit`, `info`, `outdated`, `whoami`, `login`, `publish`. Default: `https://service.generointelligence.ai` |
-| `FGLPKG_PUBLISH_REGISTRY` | Overrides `FGLPKG_REGISTRY` for the `publish` command only |
 | `FGLPKG_TOKEN` | Bearer token for the registry. Overrides stored OAuth/PAT credentials |
-| `FGLPKG_PUBLISH_TOKEN` | Bearer for the **legacy** `fglpkg-registry.fly.dev` commands only (`unpublish`, `owner`, `token`, `config`) |
-| `FGLPKG_GITHUB_TOKEN` | GitHub PAT — only used by legacy `unpublish` and downloads from private GitHub Releases |
-| `FGLPKG_GITHUB_REPO` | GitHub `owner/repo` — only used by legacy commands |
 | `FGLPKG_GENERO_VERSION` | Override Genero version detection |
 | `FGLPKG_INSTALL_CONCURRENCY` | Cap parallel downloads during install (default 4) |
 | `FGLLDPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
@@ -238,7 +227,7 @@ For non-interactive use (CI, SSH boxes, scripts), pass a Personal Access Token:
 fglpkg login --token gpr_…       # or: export FGLPKG_TOKEN=gpr_…
 ```
 
-The `publish` command uses the same OAuth/PAT credentials as the other consumer commands. The legacy `unpublish`/`owner`/`token`/`config` commands talk only to `https://fglpkg-registry.fly.dev` and require `FGLPKG_PUBLISH_TOKEN` to authenticate.
+All commands authenticate using the same OAuth/PAT credentials stored by `fglpkg login`.
 
 ## Usage
 
@@ -279,21 +268,6 @@ fglpkg login                             # Save registry + GitHub credentials
 fglpkg logout                            # Remove saved credentials
 fglpkg whoami                            # Show current authenticated user
 
-# Registry configuration (admin)
-fglpkg config github-repos list          # List configured GitHub repos
-fglpkg config github-repos add o/r       # Add a GitHub package repo
-fglpkg config github-repos remove o/r    # Remove a GitHub package repo
-
-# Package ownership
-fglpkg owner list <pkg>                  # List package owners
-fglpkg owner add <pkg> <user>            # Add a package owner
-fglpkg owner remove <pkg> <user>         # Remove a package owner
-
-# Token management (admin)
-fglpkg token create <user>               # Create a user + token
-fglpkg token revoke [<user>]             # Revoke a token
-fglpkg token rotate                      # Rotate your own token
-
 # Workspaces
 fglpkg workspace init [paths...]         # Initialise a monorepo workspace
 fglpkg workspace add <path>              # Add a member to the workspace
@@ -312,56 +286,6 @@ fglpkg docs <package> <file>             # Display a documentation file
 fglpkg version                           # Print version and build info
 fglpkg help                              # Show help
 ```
-
-## Legacy registry server
-
-> The consumer commands (`install`, `search`, `info`, `outdated`, `whoami`,
-> `login`, `publish`) talk to the Genero Intelligence registry over the
-> `/registry/*` protocol — see [Publishing a Package](#publishing-a-package).
-> The standalone server below is the **legacy** flat-file registry
-> (`cmd/registry`, deployed at `fglpkg-registry.fly.dev`). The admin commands
-> `unpublish`, `owner`, `token` and `config` still operate against it (overridable
-> with `FGLPKG_PUBLISH_REGISTRY`) until the Genero Intelligence registry exposes
-> equivalent endpoints. The API and storage layout documented here apply to this
-> legacy server only.
-
-```bash
-# Build the registry binary
-go build -o fglpkg-registry ./cmd/registry
-
-# Start the server
-export FGLPKG_PUBLISH_TOKEN=my-secret-token
-./fglpkg-registry \
-  --addr :8080 \
-  --data /var/lib/fglpkg-registry \
-  --base-url https://registry.example.com
-
-# Point fglpkg clients at your registry
-export FGLPKG_REGISTRY=https://registry.example.com
-```
-
-### Registry API
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/packages/:name/versions` | List all versions, Genero constraints, and available variants |
-| `GET` | `/packages/:name/:version` | Full package metadata (append `?genero=4` to select a variant) |
-| `GET` | `/packages/:name/:version/download` | Download the zip (or redirect to external storage) |
-| `POST` | `/packages/:name/:version/publish` | Publish a new version or variant (auth required) |
-| `DELETE` | `/packages/:name/:version/unpublish` | Remove a published version (auth required) |
-| `GET` | `/packages/:name/owners` | List package owners |
-| `POST` | `/packages/:name/owners` | Add a package owner (auth required) |
-| `DELETE` | `/packages/:name/owners/:user` | Remove a package owner (auth required) |
-| `GET` | `/config` | Registry configuration (GitHub repos) |
-| `POST` | `/config/github-repos` | Add a GitHub repo (admin only) |
-| `DELETE` | `/config/github-repos/:owner/:repo` | Remove a GitHub repo (admin only) |
-| `POST` | `/auth/token` | Create a user + token (admin only) |
-| `DELETE` | `/auth/token` | Revoke a token |
-| `POST` | `/auth/token/rotate` | Rotate own token |
-| `GET` | `/auth/whoami` | Identify current token |
-| `GET` | `/auth/users` | List all users (admin only) |
-| `GET` | `/search?q=<term>` | Search by name or description |
-| `GET` | `/health` | Liveness probe |
 
 ### Publishing a Package
 
@@ -440,18 +364,6 @@ registry. Publishing a second variant for an existing version is allowed and doe
 not require bumping the version. When a consumer runs `fglpkg install`, the
 resolver automatically selects the variant matching their local Genero major
 version.
-
-### Registry Storage
-
-The Genero Intelligence registry persists package and version metadata in its own
-database and stores artifact zips in object storage (R2); it never unzips an
-artifact. fglpkg interacts with it purely over the `/registry/*` HTTP API above —
-there is no client-visible on-disk layout.
-
-The legacy flat-file storage layout (`index.json`, `config.json`, `auth.json`,
-per-package `meta.json`) belongs to the bundled standalone server described under
-[Legacy registry server](#legacy-registry-server) below, not the Genero
-Intelligence registry.
 
 ## Releases
 

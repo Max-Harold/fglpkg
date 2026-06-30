@@ -3,7 +3,7 @@
 //
 // Supported version format:
 //
-//	MAJOR.MINOR.PATCH[-prerelease][+build]
+//	MAJOR.MINOR.PATCH[-prerelease][+metadata]
 //
 // Supported constraint operators:
 //
