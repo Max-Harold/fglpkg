@@ -10,7 +10,7 @@
 > - ✅ **Workstream B — Private packages** shipped 2026-06-26, merged 2026-06-30 (PR #4, commit `b64c209`). `privateHint` login-vs-not-found error, `publish --private/--public` flags, README docs.
 > - ✅ **Net-new: Webcomponent package support** shipped 2026-06-20 (v2.5.0, commit `8f4eb13`) with mixed BDL+WC packaging follow-up 2026-06-30 (commit `af35901`). Not in the original plan.
 > - **Current version:** 3.1.0 ([cmd/build.sh](../cmd/build.sh)).
-> - **Still open:** Workstream C items (signing, deprecate, migrate, telemetry, org/team) and the §7.1 uncovered backlog.
+> - **Still open:** Workstream C items (signing, deprecate, telemetry) and the §7.1 uncovered backlog. Two items closed on 2026-07-02: the standalone `migrate` command was **dropped** (rename/redirect folded into `deprecate --moved-to`, npm model), and **org/team management** was **deferred to the GI web portal**. GI-side changes for the rest are collected in [specs/gi-registry-workstream-c.md](../specs/gi-registry-workstream-c.md).
 
 ---
 
@@ -50,7 +50,7 @@ and a publish flow that uploads to the **Genero Intelligence (GI)** registry.
 |---|---|---|---|---|
 | A | Jettison the registry — repo hosts only the CLI | fglpkg | Removal only | ✅ **Done** 2026-06-19 (`94448f0`) |
 | B | Private packages (customer/tenant scoped) | mostly **GI (done)** + small fglpkg | Small | ✅ **Done** 2026-06-30 (PR #4, `b64c209`) |
-| C | Remaining roadmap items | mixed | Varies | In progress — signing/deprecate/migrate/telemetry/org still open |
+| C | Remaining roadmap items | mixed | Varies | In progress — signing/deprecate/telemetry still open (org/team deferred to web portal) |
 
 For the full parity picture against npm/gem/maven, **§7 reconciles this plan
 against all 33 items in [market-readiness-gaps.md](market-readiness-gaps.md)** and
@@ -256,42 +256,52 @@ started — Workstream C is the remaining ask.
 
 | Item | Status | Blocker | Effort | Notes |
 |---|---|---|---|---|
-| `fglpkg deprecate <pkg>@<ver>` | ⏳ Missing | **GI endpoint** | M | Needs `DELETE`/flag route + a `deprecated` field surfaced on reads |
-| Org/team management commands | ⏳ Missing (CLI) | **GI admin surface** | M–L | RBAC + partner model exist in GI; needs CLI commands + admin API |
-| Package **signing** / `install --verify-signature` | ⏳ Missing | none (CLI-led) | L | Largest security item; builds on existing SHA256 verification. Decide signing scheme (e.g. minisign/cosign-style detached sig + key distribution) |
-| `fglpkg migrate <old> <new>` | ⏳ Missing | none | S | Low value; rename/redirect helper |
+| `fglpkg deprecate <pkg>@<ver>` (with `--moved-to <new>`) | ⏳ Missing | **GI endpoint** | M | Marks a version deprecated with a message, warned at install/`info` (npm model). `--moved-to <new>` records a successor package — this **absorbs the dropped `migrate` command** (rename/redirect). Needs new GI columns + flag route + `deprecated`/`moved_to` fields surfaced on reads. **Design:** [GI/registry side](../specs/gi-registry-workstream-c.md) §1 · [CLI side](../specs/deprecate-cli.md) |
+| ~~Org/team management commands~~ | ✅ Deferred | — | — | **Deferred 2026-07-02 — done from the GI web portal.** The partner portal already provides member management + PAT issuance; a CLI would only wrap it. No fglpkg/registry work. See [specs/gi-registry-workstream-c.md](../specs/gi-registry-workstream-c.md) §2 |
+| Package **signing** / `install --verify-signature` | 📋 Spec drafted 2026-07-02 | GI + fglpkg (see spec) | L | Largest security item; builds on existing SHA256 verification. **Detailed design:** [specs/package-signing.md](../specs/package-signing.md) — two-layer approach (registry-signed default + optional Sigstore provenance) |
+| ~~`fglpkg migrate <old> <new>`~~ | ✅ Dropped | — | — | **Dropped 2026-07-02.** No mainstream PM ships a standalone rename command; npm folds it into `deprecate`. Rename/redirect is now the `deprecate --moved-to` flag above |
 | Opt-in telemetry | ⏳ Missing | none | M | Partly redundant — GI already tracks downloads server-side; reconsider need |
 | Self-hosted deployment kit / k8s (roadmap 2.3) | N/A | — | — | **Obsolete** — registry is Cloudflare-hosted in GI; drop from scope |
 | Web registry UI / README rendering (roadmap 1.1–1.2) | Done elsewhere | — | — | GI portals render package detail + README/USERGUIDE |
 | VS Code extension (roadmap 2.2) | ⏳ Missing | — | L | Separate project, not this repo |
 
 **Split for planning:**
-- **CLI-only (no cross-repo dependency):** signing, migrate, telemetry.
-- **Blocked on GI registry endpoints:** deprecate, org/team management. Coordinate
-  with the GI team before starting these.
+- **CLI-only (no cross-repo dependency):** signing (CLI half), telemetry.
+- **Blocked on GI registry endpoints:** deprecate (incl. `--moved-to` rename), signing
+  (registry half). Coordinate with the GI team before starting these — all GI-side
+  changes are collected in [specs/gi-registry-workstream-c.md](../specs/gi-registry-workstream-c.md).
+- **Deferred (no code):** org/team management — handled by the GI web portal.
 
 ---
 
 ## 5. Cross-repo coordination & suggested sequencing
 
-**Touches `4js-genero-intelligence`:** Workstream C `deprecate` and org/team
-management (new endpoints); optional private-package hardening (B.3).
+**Touches `4js-genero-intelligence`:** Workstream C `deprecate` and package signing
+(new endpoints + schema — see [specs/gi-registry-workstream-c.md](../specs/gi-registry-workstream-c.md));
+optional private-package hardening (B.3). Org/team management is **deferred to the GI
+web portal** — no cross-repo build.
 **fglpkg-only:** Workstream A (jettison), Workstream B CLI bits, Workstream C
-signing/migrate/telemetry.
+telemetry and the CLI halves of deprecate/signing.
 
 **Recommended order (updated 2026-07-02):**
 1. ✅ **Workstream A (jettison)** — done 2026-06-19 (`94448f0`).
 2. ✅ **Workstream B (private packages)** — done 2026-06-30 (PR #4, `b64c209`).
 3. **Workstream C — next up:** `signing` (security, customer-facing) is the
-   highest-impact CLI-led item; `deprecate`/org-mgmt once GI endpoints land;
-   `migrate`/telemetry as capacity allows.
+   highest-impact item — detailed design in
+   [specs/package-signing.md](../specs/package-signing.md);
+   `deprecate` (now including the `--moved-to` rename/redirect) once its GI endpoint
+   lands; `telemetry` as capacity allows. GI-side changes for both are collected in
+   [specs/gi-registry-workstream-c.md](../specs/gi-registry-workstream-c.md). Org/team
+   management is **deferred to the web portal**.
 
 ---
 
 ## 6. Open decisions for the R&D team
 
-- **Signing scheme** for Workstream C (key management, detached signatures,
-  registry storage of signatures, trust roots).
+- ~~**Signing scheme** for Workstream C~~ — ✅ resolved 2026-07-02.
+  See [specs/package-signing.md](../specs/package-signing.md) for the locked
+  decisions: Ed25519, Cloudflare KMS for root key custody, all sigstore-go
+  supported CI providers for Layer 2, hardcoded public-good Sigstore trust root.
 - **Re-introduction of admin commands** (`unpublish`/`owner`/`token`) — these were
   removed in the clean break; decide whether they return as CLI commands against
   new GI endpoints or live only in the GI portals.
@@ -319,16 +329,16 @@ backlog).
 | 3 | `version` bump | P0 | ✅ Done | [internal/cli/version.go](../internal/cli/version.go) |
 | 4 | `outdated` | P0 | ✅ Done | [internal/cli/outdated.go](../internal/cli/outdated.go) |
 | 5 | `audit` (CVE) | P0 | ✅ Done | OSV.dev — [internal/audit/](../internal/audit/) |
-| 6 | Package signing / verification | P0 | 📋 In plan | Workstream C (signing) — **still open** |
+| 6 | Package signing / verification | P0 | 📋 Spec drafted | Workstream C — design locked in [specs/package-signing.md](../specs/package-signing.md); implementation not started |
 | 7 | Web registry UI | P0 | ✅/⚠️ Split | detail + README/USERGUIDE rendering done in GI portals; **self-service signup** (email verify, anti-abuse) ⚠️ uncovered (GI-side) |
 | 8 | CI gate blocking merge | P0 | ⚠️ Partial | `ci.yml` exists; **branch-protection enforcement** not documented/owned |
 | 8′ | `pack` | P1 | ✅ Done | [internal/cli/pack.go](../internal/cli/pack.go) |
 | 9 | `publish --dry-run` | P1 | ✅ Done | [internal/cli/cli.go](../internal/cli/cli.go) |
 | 10 | `info` / `view` | P1 | ✅ Done | [internal/cli/info.go](../internal/cli/info.go) |
-| 11 | `deprecate` | P1 | 📋 In plan | Workstream C (GI-blocked) — **still open** |
+| 11 | `deprecate` (+ `--moved-to` rename) | P1 | 📋 Specs drafted | Workstream C (GI-blocked); absorbs the dropped `migrate` (#31) via `--moved-to`. Specs: [GI](../specs/gi-registry-workstream-c.md) §1 + [CLI](../specs/deprecate-cli.md) — implementation **still open** |
 | 12 | `.fglpkgignore` | P1 | ✅ Done | [internal/cli/ignore.go](../internal/cli/ignore.go) |
 | 13 | Dist-tags / release channels | P1 | ⚠️ Uncovered | `publish --tag beta`, `install pkg@beta`; CLI + registry |
-| 14 | Organizations / scoped names | P1 | 📋/⚠️ Split | org/team **commands** in Workstream C; `@scope/name` **namespace** ⚠️ uncovered (registry schema) |
+| 14 | Organizations / scoped names | P1 | ⏸️/⚠️ Split | org/team **commands** ⏸️ deferred to the GI web portal (2026-07-02); `@scope/name` **namespace** ⚠️ uncovered (registry schema) |
 | 15 | 2FA for publish | P1 | ⚠️ Uncovered | TOTP/WebAuthn; registry + CLI |
 | 16 | Prepublish validation | P1 | ✅ Done | [internal/cli/publish_validation.go](../internal/cli/publish_validation.go) |
 | 17 | VS Code extension | P2 | 📋 In plan | Workstream C (separate project) — **still open** |
@@ -345,16 +355,16 @@ backlog).
 | 28 | Offline install from cache | P3 | ⚠️ Uncovered | `audit --offline` reserved but errors today ([internal/cli/audit.go:69](../internal/cli/audit.go#L69)); install-side offline not built |
 | 29 | Parallel downloads | P3 | ✅ Done | [internal/installer/parallel.go](../internal/installer/parallel.go) |
 | 30 | Progress bars / status UI | P3 | ⚠️ Uncovered | install UX polish |
-| 31 | Package migration / rename | P3 | 📋 In plan | Workstream C (migrate) — **still open** |
+| 31 | Package migration / rename | P3 | ✅ Dropped | Standalone `migrate` command dropped 2026-07-02; folded into `deprecate --moved-to` (#11, npm model) as redundant/low-value |
 | 32 | LDAP / SAML / SSO | P3 | ⚠️ Uncovered | enterprise auth; GI-side direction |
 | 33 | Audit log with retention | P3 | ⚠️ Uncovered | compliance; GI-side |
 | **34** | **Webcomponent packages** (pure-WC + mixed BDL+WC) | — | ✅ Done | *Net-new since original plan.* [specs/webcomponent-packages.md](../specs/webcomponent-packages.md); shipped v2.5.0 (`8f4eb13`, 2026-06-20), mixed follow-up `af35901` (2026-06-30) |
 | **35** | **`publish --private/--public` flags + `privateHint` error** | — | ✅ Done | Workstream B follow-through, `b64c209` 2026-06-26 |
 
-**Summary (2026-07-02):** 15 Done · ~6 In plan · ~13 Uncovered · 2 net-new done.
-Rows #7, #8, #14 remain split. Workstreams A + B (rows #22 dropped, #35 done) are
-fully cleared; Workstream C rows (#6, #11, #17, #22, #23, #31) plus the §7.1
-backlog are the remaining work.
+**Summary (2026-07-02):** 15 Done · ~5 In plan · ~13 Uncovered · 2 net-new done.
+Rows #7, #8, #14 remain split. Workstreams A + B (rows #22 + #31 dropped, #35 done)
+are fully cleared; Workstream C rows (#6, #11, #17, #23) plus the §7.1 backlog are
+the remaining work.
 
 ### 7.1 Newly surfaced backlog (the ⚠️ items to add to tracking)
 
