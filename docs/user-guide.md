@@ -425,8 +425,7 @@ Each published version can carry a changelog that the registry stores and the
 portals display. Publish resolves it in this order:
 
 1. `--changelog "<text>"` — inline text, useful in CI.
-2. `--changelog-file <path>` — the file's contents, sent verbatim.
-3. **Automatic** (default): a `CHANGELOG.md` in the project root, in
+2. **Automatic** (default): a `CHANGELOG.md` in the project root, in
    [Keep a Changelog](https://keepachangelog.com) format. Publish sends only the
    section whose heading names the version being published:
 

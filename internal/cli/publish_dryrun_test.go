@@ -55,7 +55,6 @@ func TestPublishPackageDryRunNoNetwork(t *testing.T) {
 		true,                 // dryRun
 		"",                   // visibilityOverride — use manifest default
 		"",                   // changelogText
-		"",                   // changelogFile
 	)
 	if err != nil {
 		t.Fatalf("dry-run publishPackage returned error: %v", err)
@@ -117,7 +116,7 @@ func TestPublishPackageDryRunListsMetadata(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	runErr := publishPackage(m, "http://127.0.0.1:1", "6", true, "", "", "")
+	runErr := publishPackage(m, "http://127.0.0.1:1", "6", true, "", "")
 	_ = w.Close()
 	os.Stdout = old
 	var buf bytes.Buffer
@@ -179,7 +178,7 @@ func TestPublishPackageDryRunChangelog(t *testing.T) {
 	}
 
 	out, runErr := captureDryRun(t, func() error {
-		return publishPackage(m, "http://127.0.0.1:1", "6", true, "", "", "")
+		return publishPackage(m, "http://127.0.0.1:1", "6", true, "", "")
 	})
 	if runErr != nil {
 		t.Fatalf("dry-run publishPackage returned error: %v", runErr)
@@ -227,7 +226,7 @@ func TestPublishPackageDryRunChangelogMissingSection(t *testing.T) {
 	}
 
 	out, runErr := captureDryRun(t, func() error {
-		return publishPackage(m, "http://127.0.0.1:1", "6", true, "", "", "")
+		return publishPackage(m, "http://127.0.0.1:1", "6", true, "", "")
 	})
 	if runErr != nil {
 		t.Fatalf("dry-run publishPackage returned error: %v", runErr)

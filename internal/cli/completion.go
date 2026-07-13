@@ -30,7 +30,6 @@ var completionFlags = []string{
 	"--gst",
 	"--dry-run", "-n",
 	"--changelog",
-	"--changelog-file",
 	"--git",
 	"--json",
 	"--list",

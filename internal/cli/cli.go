@@ -727,29 +727,20 @@ func parseSearchArgs(args []string) (term string, all bool, err error) {
 
 // parsePublishFlags reads the publish flags: --dry-run/-n (preview, no
 // network), --ci (non-interactive pipeline mode), --private/--public
-// (visibility override on first publish), and the changelog overrides
-// --changelog <text> (inline) / --changelog-file <path>. The two changelog
-// flags are mutually exclusive; either overrides the auto CHANGELOG.md
-// extraction done at publish time.
-func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride, changelogText, changelogFile string, err error) {
-	fail := func(format string, a ...any) (bool, bool, string, string, string, error) {
-		return false, false, "", "", "", fmt.Errorf(format, a...)
+// (visibility override on first publish), and --changelog <text> (inline
+// changelog for this version, overriding the auto CHANGELOG.md extraction
+// done at publish time).
+func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride, changelogText string, err error) {
+	fail := func(format string, a ...any) (bool, bool, string, string, error) {
+		return false, false, "", "", fmt.Errorf(format, a...)
 	}
 	var wantPrivate, wantPublic bool
-	// value returns the argument for a value-consuming flag, accepting both
-	// "--flag value" and "--flag=value" forms.
+	// Loop by index so --changelog can consume the following argument. Both
+	// "--changelog value" and "--changelog=value" forms are accepted.
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if eq := strings.IndexByte(a, '='); eq >= 0 && strings.HasPrefix(a, "--") {
-			flag, val := a[:eq], a[eq+1:]
-			switch flag {
-			case "--changelog":
-				changelogText = val
-			case "--changelog-file":
-				changelogFile = val
-			default:
-				return fail("unexpected argument %q", a)
-			}
+		if val, ok := strings.CutPrefix(a, "--changelog="); ok {
+			changelogText = val
 			continue
 		}
 		switch a {
@@ -761,16 +752,12 @@ func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride, chan
 			wantPrivate = true
 		case "--public":
 			wantPublic = true
-		case "--changelog", "--changelog-file":
+		case "--changelog":
 			if i+1 >= len(args) {
 				return fail("%s requires a value", a)
 			}
 			i++
-			if a == "--changelog" {
-				changelogText = args[i]
-			} else {
-				changelogFile = args[i]
-			}
+			changelogText = args[i]
 		default:
 			return fail("unexpected argument %q", a)
 		}
@@ -778,19 +765,16 @@ func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride, chan
 	if wantPrivate && wantPublic {
 		return fail("--private and --public are mutually exclusive")
 	}
-	if changelogText != "" && changelogFile != "" {
-		return fail("--changelog and --changelog-file are mutually exclusive")
-	}
 	if wantPrivate {
 		visibilityOverride = "private"
 	} else if wantPublic {
 		visibilityOverride = "public"
 	}
-	return dryRun, ci, visibilityOverride, changelogText, changelogFile, nil
+	return dryRun, ci, visibilityOverride, changelogText, nil
 }
 
 func cmdPublish(args []string) error {
-	dryRun, ci, visibilityOverride, changelogText, changelogFile, err := parsePublishFlags(args)
+	dryRun, ci, visibilityOverride, changelogText, err := parsePublishFlags(args)
 	if err != nil {
 		return err
 	}
@@ -848,7 +832,7 @@ func cmdPublish(args []string) error {
 	if err := runHook(m, manifest.HookPrePublish, projectDir); err != nil {
 		return err
 	}
-	if err := publishPackage(m, registryURL, generoMajor, dryRun, visibilityOverride, changelogText, changelogFile); err != nil {
+	if err := publishPackage(m, registryURL, generoMajor, dryRun, visibilityOverride, changelogText); err != nil {
 		return fmt.Errorf("publish failed: %w", err)
 	}
 	if dryRun {
@@ -882,7 +866,7 @@ func cmdPublish(args []string) error {
 //     streams the zip body. Server computes size + sha256 and stores in R2.
 //  5. POST /registry/packages/:slug/versions/:version/submit — marks the
 //     version pending so an admin reviews and approves.
-func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRun bool, visibilityOverride, changelogText, changelogFile string) error {
+func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRun bool, visibilityOverride, changelogText string) error {
 	// 1. Build the zip.
 	zipData, checksum, err := buildPackageZip(m)
 	if err != nil {
@@ -921,21 +905,13 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 		return err
 	}
 
-	// Resolve the per-version changelog. Precedence: inline --changelog text,
-	// then --changelog-file (sent verbatim, capped), then the auto path —
-	// extract the CHANGELOG.md section matching this version. If a CHANGELOG
-	// exists but has no entry for m.Version, warn and send an empty changelog
-	// (publishing is not blocked) so the author knows to add one.
-	var changelog string
-	switch {
-	case changelogText != "":
-		changelog = changelogText
-	case changelogFile != "":
-		changelog, err = readWithCap(changelogFile, changelogTruncationMarker)
-		if err != nil {
-			return err
-		}
-	default:
+	// Resolve the per-version changelog. An inline --changelog overrides
+	// everything; otherwise take the auto path — extract the CHANGELOG.md
+	// section matching this version. If a CHANGELOG exists but has no entry
+	// for m.Version, warn and send an empty changelog (publishing is not
+	// blocked) so the author knows to add one.
+	changelog := changelogText
+	if changelog == "" {
 		var found bool
 		changelog, found, err = collectChangelog(docRoot, m.Version)
 		if err != nil {
