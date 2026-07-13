@@ -29,6 +29,8 @@ var completionFlags = []string{
 	"--force", "-f",
 	"--gst",
 	"--dry-run", "-n",
+	"--changelog",
+	"--changelog-file",
 	"--git",
 	"--json",
 	"--list",

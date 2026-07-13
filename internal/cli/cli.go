@@ -726,11 +726,32 @@ func parseSearchArgs(args []string) (term string, all bool, err error) {
 // ─── publish ──────────────────────────────────────────────────────────────────
 
 // parsePublishFlags reads the publish flags: --dry-run/-n (preview, no
-// network), --ci (non-interactive pipeline mode), and --private/--public
-// (visibility override on first publish).
-func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride string, err error) {
+// network), --ci (non-interactive pipeline mode), --private/--public
+// (visibility override on first publish), and the changelog overrides
+// --changelog <text> (inline) / --changelog-file <path>. The two changelog
+// flags are mutually exclusive; either overrides the auto CHANGELOG.md
+// extraction done at publish time.
+func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride, changelogText, changelogFile string, err error) {
+	fail := func(format string, a ...any) (bool, bool, string, string, string, error) {
+		return false, false, "", "", "", fmt.Errorf(format, a...)
+	}
 	var wantPrivate, wantPublic bool
-	for _, a := range args {
+	// value returns the argument for a value-consuming flag, accepting both
+	// "--flag value" and "--flag=value" forms.
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if eq := strings.IndexByte(a, '='); eq >= 0 && strings.HasPrefix(a, "--") {
+			flag, val := a[:eq], a[eq+1:]
+			switch flag {
+			case "--changelog":
+				changelogText = val
+			case "--changelog-file":
+				changelogFile = val
+			default:
+				return fail("unexpected argument %q", a)
+			}
+			continue
+		}
 		switch a {
 		case "--dry-run", "-n":
 			dryRun = true
@@ -740,23 +761,36 @@ func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride strin
 			wantPrivate = true
 		case "--public":
 			wantPublic = true
+		case "--changelog", "--changelog-file":
+			if i+1 >= len(args) {
+				return fail("%s requires a value", a)
+			}
+			i++
+			if a == "--changelog" {
+				changelogText = args[i]
+			} else {
+				changelogFile = args[i]
+			}
 		default:
-			return false, false, "", fmt.Errorf("unexpected argument %q", a)
+			return fail("unexpected argument %q", a)
 		}
 	}
 	if wantPrivate && wantPublic {
-		return false, false, "", fmt.Errorf("--private and --public are mutually exclusive")
+		return fail("--private and --public are mutually exclusive")
+	}
+	if changelogText != "" && changelogFile != "" {
+		return fail("--changelog and --changelog-file are mutually exclusive")
 	}
 	if wantPrivate {
 		visibilityOverride = "private"
 	} else if wantPublic {
 		visibilityOverride = "public"
 	}
-	return dryRun, ci, visibilityOverride, nil
+	return dryRun, ci, visibilityOverride, changelogText, changelogFile, nil
 }
 
 func cmdPublish(args []string) error {
-	dryRun, ci, visibilityOverride, err := parsePublishFlags(args)
+	dryRun, ci, visibilityOverride, changelogText, changelogFile, err := parsePublishFlags(args)
 	if err != nil {
 		return err
 	}
@@ -814,7 +848,7 @@ func cmdPublish(args []string) error {
 	if err := runHook(m, manifest.HookPrePublish, projectDir); err != nil {
 		return err
 	}
-	if err := publishPackage(m, registryURL, generoMajor, dryRun, visibilityOverride); err != nil {
+	if err := publishPackage(m, registryURL, generoMajor, dryRun, visibilityOverride, changelogText, changelogFile); err != nil {
 		return fmt.Errorf("publish failed: %w", err)
 	}
 	if dryRun {
@@ -848,7 +882,7 @@ func cmdPublish(args []string) error {
 //     streams the zip body. Server computes size + sha256 and stores in R2.
 //  5. POST /registry/packages/:slug/versions/:version/submit — marks the
 //     version pending so an admin reviews and approves.
-func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRun bool, visibilityOverride string) error {
+func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRun bool, visibilityOverride, changelogText, changelogFile string) error {
 	// 1. Build the zip.
 	zipData, checksum, err := buildPackageZip(m)
 	if err != nil {
@@ -886,6 +920,32 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 	if err != nil {
 		return err
 	}
+
+	// Resolve the per-version changelog. Precedence: inline --changelog text,
+	// then --changelog-file (sent verbatim, capped), then the auto path —
+	// extract the CHANGELOG.md section matching this version. If a CHANGELOG
+	// exists but has no entry for m.Version, warn and send an empty changelog
+	// (publishing is not blocked) so the author knows to add one.
+	var changelog string
+	switch {
+	case changelogText != "":
+		changelog = changelogText
+	case changelogFile != "":
+		changelog, err = readWithCap(changelogFile, changelogTruncationMarker)
+		if err != nil {
+			return err
+		}
+	default:
+		var found bool
+		changelog, found, err = collectChangelog(docRoot, m.Version)
+		if err != nil {
+			return err
+		}
+		if found && changelog == "" {
+			fmt.Printf("  ⚠ CHANGELOG found but has no entry for %s — publishing with an empty changelog\n", m.Version)
+		}
+	}
+
 	meta := registry.VersionMeta{
 		Repository:   m.Repository,
 		Author:       m.Author,
@@ -901,7 +961,8 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 		fmt.Printf("            body: {slug:%q, name:%q, description:%q, visibility:%q}\n",
 			slug, m.Name, m.Description, visibility)
 		fmt.Printf("  [dry-run] would POST   %s/registry/packages/%s/versions\n", registryURL, slug)
-		fmt.Printf("            body: {version:%q, changelog:\"\"}\n", m.Version)
+		fmt.Printf("            body: {version:%q, changelog:%s}\n",
+			m.Version, docSizeLabel(changelog, changelogTruncationMarker))
 		fmt.Printf("            metadata:\n")
 		fmt.Printf("              repository:   %s\n", dryRunScalar(meta.Repository))
 		fmt.Printf("              author:       %s\n", dryRunScalar(meta.Author))
@@ -928,7 +989,7 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 	// 3. Create version. 409 (already exists) is fine — caller is adding
 	//    a new variant to an existing version.
 	fmt.Println("  → POST   /registry/packages/" + slug + "/versions")
-	if err := registry.PublishCreateVersion(slug, m.Version, "", nil, meta); err != nil {
+	if err := registry.PublishCreateVersion(slug, m.Version, changelog, nil, meta); err != nil {
 		if !errors.Is(err, registry.ErrVersionExists) {
 			return err
 		}

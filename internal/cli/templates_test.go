@@ -148,10 +148,15 @@ func TestParsePublishFlags(t *testing.T) {
 		{"ci", []string{"--ci"}, false, true, false},
 		{"both", []string{"--dry-run", "--ci"}, true, true, false},
 		{"unknown", []string{"--nope"}, false, false, true},
+		{"changelog value", []string{"--changelog", "notes"}, false, false, false},
+		{"changelog eq", []string{"--changelog=notes"}, false, false, false},
+		{"changelog missing value", []string{"--changelog"}, false, false, true},
+		{"changelog file", []string{"--changelog-file", "CL.md"}, false, false, false},
+		{"changelog both exclusive", []string{"--changelog", "x", "--changelog-file", "CL.md"}, false, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dry, ci, _, err := parsePublishFlags(tc.args)
+			dry, ci, _, _, _, err := parsePublishFlags(tc.args)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for %v", tc.args)
@@ -165,5 +170,23 @@ func TestParsePublishFlags(t *testing.T) {
 				t.Errorf("got dry=%v ci=%v, want dry=%v ci=%v", dry, ci, tc.wantDry, tc.wantCI)
 			}
 		})
+	}
+}
+
+func TestParsePublishFlagsChangelogValues(t *testing.T) {
+	_, _, _, text, file, err := parsePublishFlags([]string{"--changelog", "hello world"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "hello world" || file != "" {
+		t.Errorf("got text=%q file=%q, want text=%q file=\"\"", text, file, "hello world")
+	}
+
+	_, _, _, text, file, err = parsePublishFlags([]string{"--changelog-file=notes/CL.md"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if file != "notes/CL.md" || text != "" {
+		t.Errorf("got text=%q file=%q, want text=\"\" file=%q", text, file, "notes/CL.md")
 	}
 }
