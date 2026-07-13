@@ -43,6 +43,19 @@ sudo chmod +x /usr/local/bin/fglpkg
 copy fglpkg-windows-amd64.exe C:\tools\fglpkg.exe
 ```
 
+### macOS Gatekeeper warning
+
+If you download the macOS binary through a **browser**, macOS tags it with a quarantine
+attribute and Gatekeeper blocks it on first run — *"fglpkg cannot be opened because the developer
+cannot be verified."* Clear the quarantine flag after copying it into place:
+
+```bash
+sudo xattr -d com.apple.quarantine /usr/local/bin/fglpkg
+```
+
+Alternatively, right-click the file in Finder → **Open** once to add a one-time exception, or
+download the asset with `curl -L -O <asset-url>` (curl does not set the quarantine attribute).
+
 Add environment setup:
 
 **macOS / Linux** — add to `~/.bashrc` or `~/.zshrc`:
