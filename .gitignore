@@ -36,6 +36,7 @@ go.work.sum
 bin/
 .claude/
 .fglpkg/
+.private/
 
 # Mac Files
 .DS_Store
