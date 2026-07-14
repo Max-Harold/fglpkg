@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/4js-mikefolcher/fglpkg/internal/config"
 	"github.com/4js-mikefolcher/fglpkg/internal/credentials"
 	"github.com/4js-mikefolcher/fglpkg/internal/env"
 	"github.com/4js-mikefolcher/fglpkg/internal/genero"
@@ -29,6 +30,7 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/lockfile"
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
 	"github.com/4js-mikefolcher/fglpkg/internal/oauth"
+	"github.com/4js-mikefolcher/fglpkg/internal/provider"
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/semver"
 	"github.com/4js-mikefolcher/fglpkg/internal/workspace"
@@ -154,6 +156,8 @@ func Execute() error {
 		return cmdWhoami(args)
 	case "workspace", "ws":
 		return cmdWorkspace(args)
+	case "registry":
+		return cmdRegistry(args)
 	case "run":
 		return cmdRun(args)
 	case "bdl":
@@ -250,7 +254,10 @@ func cmdInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	inst := newInstaller(home)
+	// Best-effort manifest load so any configured registries drive resolution.
+	// The authoritative load happens later per install path.
+	regManifest, _ := manifest.Load(".")
+	inst := newInstaller(home, regManifest)
 	projectDir, _ := os.Getwd()
 
 	if isLocal {
@@ -532,7 +539,7 @@ func cmdRemove(args []string) error {
 
 	// Reconcile installed state with the shrunk manifest: rewrite the lock and
 	// (for local installs only) prune packages/JARs the graph no longer needs.
-	inst := newInstaller(home)
+	inst := newInstaller(home, m)
 	pruned, err := inst.ReconcileAfterRemove(m, projectDir, isLocal)
 	if err != nil {
 		fmt.Printf("warning: could not re-resolve to prune orphaned dependencies: %v\n", err)
@@ -573,7 +580,7 @@ func cmdUpdate(args []string) error {
 	projectDir, _ := os.Getwd()
 	fmt.Println("Ignoring lock file and re-resolving all dependencies...")
 	instOpts := installer.Options{Production: flags.production, NoManifestFallback: flags.noManifestFallback}
-	return newInstaller(home).InstallAllWithOptions(m, projectDir, true, instOpts)
+	return newInstaller(home, m).InstallAllWithOptions(m, projectDir, true, instOpts)
 }
 
 // ─── list ─────────────────────────────────────────────────────────────────────
@@ -584,7 +591,7 @@ func cmdList(args []string) error {
 	if err != nil {
 		return err
 	}
-	pkgs, err := newInstaller(home).List()
+	pkgs, err := newInstaller(home, nil).List()
 	if err != nil {
 		return err
 	}
@@ -667,6 +674,16 @@ func cmdSearch(args []string) error {
 		return err
 	}
 
+	// Multi-provider fan-out when secondary repositories are configured.
+	home, _ := fglpkgHome()
+	var m *manifest.Manifest
+	if mm, mErr := manifest.Load("."); mErr == nil {
+		m = mm
+	}
+	if rs, _, rErr := buildRepositorySet(home, m); rErr == nil && rs != nil {
+		return searchAcrossProviders(rs, term, all)
+	}
+
 	results, err := registry.Search(term)
 	if err != nil {
 		// Older registry servers reject an empty q with 400 — surface a
@@ -695,6 +712,42 @@ func cmdSearch(args []string) error {
 	fmt.Printf("  %-30s %-12s %s\n", "----", "-------", "-----------")
 	for _, r := range results {
 		fmt.Printf("  %-30s %-12s %s\n", r.Name, r.LatestVersion, r.Description)
+	}
+	return nil
+}
+
+// searchAcrossProviders fans out a search to every configured provider, tags
+// each result with its source repository, and prints a source-tagged table.
+func searchAcrossProviders(rs *provider.RepositorySet, term string, all bool) error {
+	var results []registry.SearchResult
+	for _, p := range rs.Providers() {
+		rr, err := p.Search(term)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: search in %q failed: %v\n", p.Name(), err)
+			continue
+		}
+		for i := range rr {
+			rr[i].Source = p.Name()
+		}
+		results = append(results, rr...)
+	}
+	if len(results) == 0 {
+		if all {
+			fmt.Println("No packages in any configured repository.")
+		} else {
+			fmt.Printf("No packages found matching %q\n", term)
+		}
+		return nil
+	}
+	if all {
+		fmt.Printf("All packages (%d):\n", len(results))
+	} else {
+		fmt.Printf("Results for %q:\n", term)
+	}
+	fmt.Printf("  %-28s %-12s %-14s %s\n", "NAME", "VERSION", "SOURCE", "DESCRIPTION")
+	fmt.Printf("  %-28s %-12s %-14s %s\n", "----", "-------", "------", "-----------")
+	for _, r := range results {
+		fmt.Printf("  %-28s %-12s %-14s %s\n", r.Name, r.LatestVersion, r.Source, r.Description)
 	}
 	return nil
 }
@@ -979,54 +1032,75 @@ func joinWithAnd(items []string) string {
 // (visibility override on first publish), and --changelog <text> (inline
 // changelog for this version, overriding the auto CHANGELOG.md extraction
 // done at publish time).
-func parsePublishFlags(args []string) (dryRun, ci bool, visibilityOverride, changelogText string, err error) {
-	fail := func(format string, a ...any) (bool, bool, string, string, error) {
-		return false, false, "", "", fmt.Errorf(format, a...)
-	}
+// publishFlags is the parsed flag surface of `fglpkg publish`.
+type publishFlags struct {
+	dryRun     bool
+	ci         bool
+	force      bool   // Artifactory: overwrite an existing variant
+	registry   string // target repository ("" or "gi" = GI)
+	visibility string // "private"/"public" (GI only)
+	changelog  string
+}
+
+func parsePublishFlags(args []string) (publishFlags, error) {
+	var pf publishFlags
 	var wantPrivate, wantPublic bool
-	// Loop by index so --changelog can consume the following argument. Both
-	// "--changelog value" and "--changelog=value" forms are accepted.
+	// Loop by index so --changelog/--registry can consume the following
+	// argument. Both "--flag value" and "--flag=value" forms are accepted.
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if val, ok := strings.CutPrefix(a, "--changelog="); ok {
-			changelogText = val
+			pf.changelog = val
+			continue
+		}
+		if val, ok := strings.CutPrefix(a, "--registry="); ok {
+			pf.registry = val
 			continue
 		}
 		switch a {
 		case "--dry-run", "-n":
-			dryRun = true
+			pf.dryRun = true
 		case "--ci":
-			ci = true
+			pf.ci = true
+		case "--force", "-f":
+			pf.force = true
 		case "--private":
 			wantPrivate = true
 		case "--public":
 			wantPublic = true
 		case "--changelog":
 			if i+1 >= len(args) {
-				return fail("%s requires a value", a)
+				return publishFlags{}, fmt.Errorf("%s requires a value", a)
 			}
 			i++
-			changelogText = args[i]
+			pf.changelog = args[i]
+		case "--registry":
+			if i+1 >= len(args) {
+				return publishFlags{}, fmt.Errorf("%s requires a value", a)
+			}
+			i++
+			pf.registry = args[i]
 		default:
-			return fail("unexpected argument %q", a)
+			return publishFlags{}, fmt.Errorf("unexpected argument %q", a)
 		}
 	}
 	if wantPrivate && wantPublic {
-		return fail("--private and --public are mutually exclusive")
+		return publishFlags{}, fmt.Errorf("--private and --public are mutually exclusive")
 	}
 	if wantPrivate {
-		visibilityOverride = "private"
+		pf.visibility = "private"
 	} else if wantPublic {
-		visibilityOverride = "public"
+		pf.visibility = "public"
 	}
-	return dryRun, ci, visibilityOverride, changelogText, nil
+	return pf, nil
 }
 
 func cmdPublish(args []string) error {
-	dryRun, ci, visibilityOverride, changelogText, err := parsePublishFlags(args)
+	pf, err := parsePublishFlags(args)
 	if err != nil {
 		return err
 	}
+	dryRun, ci, visibilityOverride, changelogText := pf.dryRun, pf.ci, pf.visibility, pf.changelog
 
 	home, err := fglpkgHome()
 	if err != nil {
@@ -1048,6 +1122,20 @@ func cmdPublish(args []string) error {
 		return fmt.Errorf("cannot detect Genero version: %w", err)
 	}
 	generoMajor := gv.MajorString()
+
+	// Publishing to a secondary (Artifactory) repository takes a distinct,
+	// direct-PUT path — no GI variant pre-check, no submit/approval step.
+	if pf.registry != "" && pf.registry != config.GIName {
+		projectDir, _ := os.Getwd()
+		if err := runHook(m, manifest.HookPrePublish, projectDir); err != nil {
+			return err
+		}
+		if err := publishToArtifactory(home, m, generoMajor, pf); err != nil {
+			return fmt.Errorf("publish failed: %w", err)
+		}
+		return runHook(m, manifest.HookPostPublish, projectDir)
+	}
+
 	if err := checkVariantNotPublished(m, generoMajor); err != nil {
 		return err
 	}
@@ -1098,6 +1186,66 @@ func cmdPublish(args []string) error {
 		}
 	}
 	return runHook(m, manifest.HookPostPublish, projectDir)
+}
+
+// publishToArtifactory deploys the built package + sidecar manifest to a
+// configured Artifactory generic repository via direct PUTs (spec §10).
+func publishToArtifactory(home string, m *manifest.Manifest, generoMajor string, pf publishFlags) error {
+	reg, err := resolveRegistry(home, pf.registry)
+	if err != nil {
+		return err
+	}
+	if reg.Type != config.TypeArtifactory {
+		return fmt.Errorf("registry %q is type %q, not artifactory", reg.Name, reg.Type)
+	}
+	if pf.visibility != "" {
+		fmt.Fprintf(os.Stderr, "  note: --private/--public is ignored when publishing to Artifactory (access is governed by the repository)\n")
+	}
+
+	creds, _ := credentials.Load(home)
+	var headers map[string]string
+	if creds != nil {
+		headers = creds.AuthHeaders(reg.URL, reg.Auth)
+	}
+	if len(headers) == 0 && reg.Auth != config.AuthAnonymous {
+		return fmt.Errorf("no credentials for registry %q — run 'fglpkg login --registry %s'", reg.Name, reg.Name)
+	}
+	p := provider.NewArtifactoryProvider(reg, nil, headersApplier(headers))
+
+	zipData, checksum, err := buildPackageZip(m)
+	if err != nil {
+		return fmt.Errorf("cannot build package zip: %w", err)
+	}
+	sidecar, err := json.MarshalIndent(m.PublishCopy(), "", "  ")
+	if err != nil {
+		return fmt.Errorf("cannot serialize sidecar manifest: %w", err)
+	}
+	variant := artifactVariant(m, generoMajor)
+
+	fmt.Printf("Publishing %s@%s (%s) to %s (%s)...\n", m.Name, m.Version, variantDescription(variant), reg.Name, reg.URL)
+	if pf.dryRun {
+		fmt.Printf("DRY RUN — no network calls will be made\n")
+	} else {
+		fmt.Printf("  Package zip: %d bytes (SHA256: %s)\n", len(zipData), checksum)
+	}
+	if err := p.Publish(provider.PublishRequest{
+		Name:     m.Name,
+		Version:  m.Version,
+		Variant:  variant,
+		Zip:      zipData,
+		Checksum: checksum,
+		Manifest: append(sidecar, '\n'),
+		Force:    pf.force,
+		DryRun:   pf.dryRun,
+	}); err != nil {
+		return err
+	}
+	if pf.dryRun {
+		fmt.Printf("✓ Dry run complete for %s@%s — no changes made\n", m.Name, m.Version)
+	} else {
+		fmt.Printf("✓ Published %s@%s to %s\n", m.Name, m.Version, reg.Name)
+	}
+	return nil
 }
 
 // publishPackage drives the new /registry/* publish flow against the registry
@@ -1863,9 +2011,8 @@ func cmdLogin(args []string) error {
 	if err != nil {
 		return err
 	}
-	registryURL := defaultRegistry()
 
-	pat, err := parseLoginArgs(args)
+	la, err := parseLoginArgs(args)
 	if err != nil {
 		return err
 	}
@@ -1875,7 +2022,15 @@ func cmdLogin(args []string) error {
 		return err
 	}
 
-	if pat != "" {
+	// A --registry naming a non-GI (Artifactory) repository stores credentials
+	// per its configured auth scheme, keyed by the repo URL.
+	if la.registry != "" && la.registry != config.GIName {
+		return loginToRegistry(home, creds, la)
+	}
+
+	registryURL := defaultRegistry()
+	if la.token != "" {
+		pat := la.token
 		if !strings.HasPrefix(pat, "gpr_") {
 			fmt.Fprintln(os.Stderr, "  Warning: PAT does not start with 'gpr_' — storing anyway.")
 		}
@@ -1918,23 +2073,112 @@ func cmdLogin(args []string) error {
 	return nil
 }
 
-// parseLoginArgs reads the (very small) flag surface of `fglpkg login`.
-func parseLoginArgs(args []string) (pat string, err error) {
+// loginToRegistry stores credentials for a configured (non-GI) repository
+// according to its auth scheme, keyed by the repository URL.
+func loginToRegistry(home string, creds *credentials.File, la loginArgs) error {
+	reg, err := resolveRegistry(home, la.registry)
+	if err != nil {
+		return err
+	}
+	switch reg.Auth {
+	case config.AuthBearer:
+		if la.token == "" {
+			return fmt.Errorf("registry %q uses bearer auth; pass --token <access-token>", reg.Name)
+		}
+		creds.Set(reg.URL, la.token, "")
+	case config.AuthBasic:
+		if la.user == "" || la.password == "" {
+			return fmt.Errorf("registry %q uses basic auth; pass --user <u> --password <p|token>", reg.Name)
+		}
+		creds.SetBasic(reg.URL, la.user, la.password)
+	case config.AuthAPIKey:
+		if la.apiKey == "" {
+			return fmt.Errorf("registry %q uses apikey auth; pass --api-key <key>", reg.Name)
+		}
+		creds.SetAPIKey(reg.URL, la.apiKey)
+	case config.AuthAnonymous:
+		fmt.Printf("Registry %q uses anonymous access — no login needed.\n", reg.Name)
+		return nil
+	default:
+		return fmt.Errorf("registry %q has unknown auth scheme %q", reg.Name, reg.Auth)
+	}
+	if err := creds.Save(home); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Credentials saved for registry %q (%s, %s auth)\n", reg.Name, reg.URL, reg.Auth)
+	return nil
+}
+
+// resolveRegistry finds a configured registry descriptor by logical name,
+// consulting the built-in GI entry, the global config, and the project manifest.
+func resolveRegistry(home, name string) (config.Registry, error) {
+	var projRegs []config.Registry
+	if m, err := manifest.Load("."); err == nil {
+		projRegs = m.Registries
+	}
+	regs, err := config.Load(home, os.Getenv("FGLPKG_REGISTRY"), projRegs)
+	if err != nil {
+		return config.Registry{}, err
+	}
+	r, ok := config.Find(regs, name)
+	if !ok {
+		return config.Registry{}, fmt.Errorf(
+			"registry %q is not configured (add it to fglpkg.json or ~/.fglpkg/config.json)", name)
+	}
+	return r, nil
+}
+
+// loginArgs is the parsed flag surface of `fglpkg login`.
+type loginArgs struct {
+	registry string // --registry <name>; "" or "gi" = the default GI registry
+	token    string // --token: GI PAT, or an Artifactory bearer access token
+	user     string // --user: Artifactory basic username
+	password string // --password: Artifactory basic secret (password or token)
+	apiKey   string // --api-key: Artifactory API key
+}
+
+// parseLoginArgs reads the flag surface of `fglpkg login`/`logout`.
+func parseLoginArgs(args []string) (la loginArgs, err error) {
 	i := 0
 	for i < len(args) {
 		a := args[i]
-		switch a {
-		case "--token":
+		need := func() (string, error) {
 			if i+1 >= len(args) {
-				return "", fmt.Errorf("--token requires a value")
+				return "", fmt.Errorf("%s requires a value", a)
 			}
-			pat = strings.TrimSpace(args[i+1])
+			return strings.TrimSpace(args[i+1]), nil
+		}
+		switch a {
+		case "--registry":
+			if la.registry, err = need(); err != nil {
+				return loginArgs{}, err
+			}
+			i += 2
+		case "--token":
+			if la.token, err = need(); err != nil {
+				return loginArgs{}, err
+			}
+			i += 2
+		case "--user":
+			if la.user, err = need(); err != nil {
+				return loginArgs{}, err
+			}
+			i += 2
+		case "--password":
+			if la.password, err = need(); err != nil {
+				return loginArgs{}, err
+			}
+			i += 2
+		case "--api-key":
+			if la.apiKey, err = need(); err != nil {
+				return loginArgs{}, err
+			}
 			i += 2
 		default:
-			return "", fmt.Errorf("unknown argument %q\nusage: fglpkg login [--token <PAT>]", a)
+			return loginArgs{}, fmt.Errorf("unknown argument %q\nusage: fglpkg login [--registry <name>] [--token <PAT>] [--user <u> --password <p>] [--api-key <k>]", a)
 		}
 	}
-	return pat, nil
+	return la, nil
 }
 
 // whoamiSubject returns a one-line subject for "Logged in as …" messages.
@@ -1958,15 +2202,26 @@ func whoamiSubject(w whoamiResult) string {
 
 // ─── logout ───────────────────────────────────────────────────────────────────
 
-func cmdLogout(_ []string) error {
+func cmdLogout(args []string) error {
 	home, err := fglpkgHome()
 	if err != nil {
 		return err
 	}
-	registryURL := defaultRegistry()
+	la, err := parseLoginArgs(args)
+	if err != nil {
+		return err
+	}
 	creds, err := credentials.Load(home)
 	if err != nil {
 		return err
+	}
+	registryURL := defaultRegistry()
+	if la.registry != "" && la.registry != config.GIName {
+		reg, err := resolveRegistry(home, la.registry)
+		if err != nil {
+			return err
+		}
+		registryURL = reg.URL
 	}
 	if _, ok := creds.Get(registryURL); !ok {
 		fmt.Printf("Not logged in to %s\n", registryURL)
@@ -2020,6 +2275,56 @@ func parseOwnerRepo(s string) (owner, repo string, err error) {
 		return "", "", fmt.Errorf("expected owner/repo format, got %q", s)
 	}
 	return parts[0], parts[1], nil
+}
+
+// ─── registry ───────────────────────────────────────────────────────────────
+
+func cmdRegistry(args []string) error {
+	if len(args) == 0 || args[0] == "list" {
+		return cmdRegistryList()
+	}
+	return fmt.Errorf("unknown registry subcommand %q\nusage: fglpkg registry list", args[0])
+}
+
+func cmdRegistryList() error {
+	home, err := fglpkgHome()
+	if err != nil {
+		return err
+	}
+	var projRegs []config.Registry
+	if m, err := manifest.Load("."); err == nil {
+		projRegs = m.Registries
+	}
+	regs, err := config.Load(home, os.Getenv("FGLPKG_REGISTRY"), projRegs)
+	if err != nil {
+		return err
+	}
+	creds, _ := credentials.Load(home)
+
+	fmt.Printf("%-16s %-12s %-4s %-9s %-6s %s\n", "NAME", "TYPE", "PRIO", "AUTH", "LOGIN", "URL")
+	for _, r := range regs {
+		fmt.Printf("%-16s %-12s %-4d %-9s %-6s %s\n",
+			r.Name, r.Type, r.Priority, r.Auth, registryLoginStatus(creds, r), r.URL)
+	}
+	return nil
+}
+
+// registryLoginStatus reports whether usable credentials exist for a registry.
+func registryLoginStatus(creds *credentials.File, r config.Registry) string {
+	if r.Auth == config.AuthAnonymous {
+		return "anon"
+	}
+	if creds == nil {
+		return "no"
+	}
+	if len(creds.AuthHeaders(r.URL, r.Auth)) > 0 {
+		return "yes"
+	}
+	// GI bearer may be OAuth, which AuthHeaders does not cover.
+	if e, ok := creds.Get(r.URL); ok && (e.OAuth != nil || e.Pat != "" || e.APIKey != "") {
+		return "yes"
+	}
+	return "no"
 }
 
 // ─── workspace ────────────────────────────────────────────────────────────────
@@ -2598,7 +2903,7 @@ func fglpkgHome() (string, error) {
 	return filepath.Join(home, ".fglpkg"), nil
 }
 
-func newInstaller(home string) *installer.Installer {
+func newInstaller(home string, m *manifest.Manifest) *installer.Installer {
 	// Always look up credentials from the global home directory, even when
 	// installing to a local project directory (--local).
 	globalHome, err := fglpkgHome()
@@ -2608,7 +2913,80 @@ func newInstaller(home string) *installer.Installer {
 	registryURL := defaultRegistry()
 	githubToken := credentials.GitHubTokenFor(globalHome, registryURL)
 	registryToken, _ := credentials.ActiveBearer(context.Background(), globalHome, registryURL, oauth.Refresh)
-	return installer.New(home, githubToken, registryToken)
+	inst := installer.New(home, githubToken, registryToken)
+
+	// Engage multi-provider routing only when repositories beyond the built-in
+	// GI registry are configured — otherwise the single-registry path stays
+	// byte-identical (no Source stamped in the lockfile).
+	if rs, repoAuth, err := buildRepositorySet(globalHome, m); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: ignoring registries config: %v\n", err)
+	} else if rs != nil {
+		inst = inst.WithFetchers(rs.Versions, rs.Info).WithRepoAuth(repoAuth)
+	}
+	return inst
+}
+
+// buildRepositorySet resolves the configured registries and, when more than the
+// built-in GI registry is present, builds a RepositorySet plus the per-repo
+// download auth. Returns (nil, nil, nil) for the single-registry case.
+func buildRepositorySet(globalHome string, m *manifest.Manifest) (*provider.RepositorySet, []installer.RepoAuth, error) {
+	var projRegs []config.Registry
+	var pins map[string]string
+	if m != nil {
+		projRegs = m.Registries
+		pins = collectFGLPins(m)
+	}
+	regs, err := config.Load(globalHome, os.Getenv("FGLPKG_REGISTRY"), projRegs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(regs) <= 1 {
+		return nil, nil, nil // only the built-in gi — keep legacy behaviour
+	}
+
+	creds, _ := credentials.Load(globalHome)
+	var provs []provider.Provider
+	var repoAuth []installer.RepoAuth
+	for _, r := range regs {
+		switch r.Type {
+		case config.TypeArtifactory:
+			var headers map[string]string
+			if creds != nil {
+				headers = creds.AuthHeaders(r.URL, r.Auth)
+			}
+			provs = append(provs, provider.NewArtifactoryProvider(r, nil, headersApplier(headers)))
+			if len(headers) > 0 {
+				repoAuth = append(repoAuth, installer.RepoAuth{URLPrefix: r.URL, Headers: headers})
+			}
+		default: // genero
+			provs = append(provs, provider.NewGeneroProvider(r.Name))
+		}
+	}
+	return provider.NewRepositorySet(provs, regs, pins), repoAuth, nil
+}
+
+// headersApplier turns a fixed header map into a provider.AuthApplier (nil when
+// there are no headers, i.e. anonymous).
+func headersApplier(headers map[string]string) provider.AuthApplier {
+	if len(headers) == 0 {
+		return nil
+	}
+	return func(req *http.Request) {
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+	}
+}
+
+// collectFGLPins merges the per-dependency registry pins from every scope.
+func collectFGLPins(m *manifest.Manifest) map[string]string {
+	pins := map[string]string{}
+	for _, d := range []manifest.Dependencies{m.Dependencies, m.DevDependencies, m.OptionalDependencies} {
+		for name, reg := range d.FGLPins {
+			pins[name] = reg
+		}
+	}
+	return pins
 }
 
 // defaultRegistry returns the consumer registry URL — install, search,

@@ -222,7 +222,7 @@ Arguments after the module name are passed to the program unchanged.
 		ListDetail: "\n(--dry-run prints what would happen without calling out;\n" +
 			" --ci for non-interactive pipelines: requires FGLPKG_TOKEN,\n" +
 			" prints a machine-readable status line)",
-		Usage: "fglpkg publish [--dry-run] [--ci] [--private|--public] [--changelog <text>]",
+		Usage: "fglpkg publish [--dry-run] [--ci] [--private|--public] [--changelog <text>] [--registry <name>] [--force]",
 		Long: `FLAGS:
   --dry-run, -n            Print what would happen without any network calls
   --ci                     Non-interactive mode for pipelines: requires
@@ -230,8 +230,14 @@ Arguments after the module name are passed to the program unchanged.
   --private                Mark the package private on first publish
   --public                 Mark the package public on first publish (default)
   --changelog <text>       Changelog text for this version (overrides CHANGELOG.md)
+  --registry <name>        Publish to a configured repository (e.g. a JFrog
+                           Artifactory repo) instead of the GI registry
+  --force, -f              When publishing to Artifactory, overwrite an existing
+                           variant instead of refusing
 
 Builds the package zip, uploads it, and submits the version for admin review.
+When --registry names an Artifactory repository, the zip and its sidecar
+fglpkg.json are deployed directly (no submit/approval step).
 
 CHANGELOG:
   When --changelog is not given, publish looks for a CHANGELOG.md in the project
@@ -287,6 +293,18 @@ With no flags, opens a browser to complete an OAuth (code + PKCE) login.
   add <path>               Add a member project to the workspace
   list                     List workspace members
   info                     Print a workspace summary
+`,
+	},
+	{
+		Name:    "registry",
+		Summary: "List configured package repositories",
+		Usage:   "fglpkg registry list",
+		Long: `SUBCOMMANDS:
+  list                     Show configured repositories, priority, auth scheme, and login status
+
+Repositories are configured via a "registries" array in fglpkg.json and/or
+~/.fglpkg/config.json, alongside the built-in Genero Intelligence registry.
+See specs/artifactory-secondary-repository.md.
 `,
 	},
 	{

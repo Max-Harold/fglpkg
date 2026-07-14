@@ -49,6 +49,11 @@ type ResolvedPackage struct {
 	// When a package is reachable via multiple paths the strongest scope
 	// wins: prod beats optional beats dev.
 	Scope manifest.Scope
+	// Source is the logical name of the repository this package resolved
+	// from ("gi", "acme-internal", …). Copied from the resolving provider's
+	// PackageInfo.Source; empty means the default GI registry. Recorded in
+	// the lockfile as the anti-dependency-confusion pin.
+	Source string
 }
 
 // IsWebcomponent reports whether this resolved entry is a webcomponent
@@ -191,6 +196,20 @@ func NewWithFetchers(gv genero.Version, fv VersionFetcher, fi InfoFetcher) *Reso
 func (r *Resolver) WithWorkspace(ws *workspace.Workspace) *Resolver {
 	r.ws = ws
 	return r
+}
+
+// DetectWorkspace loads a workspace from the current directory, if one exists,
+// mirroring New's behaviour. Used with NewWithFetchers so a multi-provider
+// resolver still honours workspace-local members.
+func (r *Resolver) DetectWorkspace() error {
+	if wsRoot := workspace.FindRoot("."); wsRoot != "" {
+		ws, err := workspace.Load(wsRoot)
+		if err != nil {
+			return fmt.Errorf("cannot load workspace: %w", err)
+		}
+		r.ws = ws
+	}
+	return nil
 }
 
 // Resolve resolves all transitive dependencies of the given root manifest
@@ -557,6 +576,7 @@ func (s *state) buildPlan() *Plan {
 			Variant:     entry.info.Variant,
 			RequiredBy:  requiredBy,
 			Scope:       entry.scope,
+			Source:      entry.info.Source,
 		})
 	}
 	for i := 1; i < len(pkgs); i++ {

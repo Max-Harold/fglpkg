@@ -69,6 +69,12 @@ type PackageInfo struct {
 	Variant  string        `json:"variant,omitempty"`
 	Variants []VariantInfo `json:"variants,omitempty"`
 	Readme   string        `json:"readme,omitempty"`
+	// Source is the logical name of the repository this info was resolved
+	// from ("gi", "acme-internal", …). Set by the multi-provider routing
+	// layer; empty means the default GI registry. Threaded into the lockfile
+	// as the dependency-confusion pin. See
+	// specs/artifactory-secondary-repository.md §9.
+	Source string `json:"source,omitempty"`
 }
 
 // VariantInfo describes a Genero-major-version-specific build.
@@ -98,6 +104,9 @@ type SearchResult struct {
 	LatestVersion string `json:"latestVersion"`
 	Description   string `json:"description"`
 	Author        string `json:"author"`
+	// Source is the logical repository this result came from, set by the
+	// multi-provider search fan-out. Empty for single-registry results.
+	Source string `json:"source,omitempty"`
 }
 
 // RegistryConfig is returned by the publisher registry's /config endpoint.
