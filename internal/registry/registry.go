@@ -83,13 +83,33 @@ type PackageInfo struct {
 	// as the dependency-confusion pin. See
 	// specs/artifactory-secondary-repository.md §9.
 	Source string `json:"source,omitempty"`
+
+	// ── Layer 1 signing material for the selected artifact ──
+	// These carry the inputs needed to reconstruct the canonical signed
+	// payload and verify the registry signature. Size/UploadedAt/Uploader
+	// are part of that payload; Signature is nil for unsigned artifacts.
+	Size       int64      `json:"size,omitempty"`
+	UploadedAt string     `json:"uploadedAt,omitempty"`
+	Uploader   string     `json:"uploader,omitempty"`
+	Signature  *Signature `json:"signature,omitempty"`
+}
+
+// Signature is the Ed25519 signature envelope for a registry-signed artifact.
+type Signature struct {
+	KeyID string `json:"keyid"`
+	Alg   string `json:"alg"`
+	Sig   string `json:"sig"`
 }
 
 // VariantInfo describes a Genero-major-version-specific build.
 type VariantInfo struct {
-	GeneroMajor string `json:"generoMajor"`
-	DownloadURL string `json:"downloadUrl"`
-	Checksum    string `json:"checksum"`
+	GeneroMajor string     `json:"generoMajor"`
+	DownloadURL string     `json:"downloadUrl"`
+	Checksum    string     `json:"checksum"`
+	Size        int64      `json:"size,omitempty"`
+	UploadedAt  string     `json:"uploadedAt,omitempty"`
+	Uploader    string     `json:"uploader,omitempty"`
+	Signature   *Signature `json:"signature,omitempty"`
 }
 
 // VersionEntry pairs a version string with its declared Genero compatibility.
@@ -196,12 +216,20 @@ func FetchInfoForGenero(name, version, generoMajor string) (*PackageInfo, error)
 		JavaDeps:         v.Dependencies.Java,
 		Variant:          art.Variant,
 		Readme:           v.Readme,
+		Size:             art.SizeBytes,
+		UploadedAt:       art.UploadedAt,
+		Uploader:         art.Uploader,
+		Signature:        art.Signature.toSignature(),
 	}
 	for _, a := range v.Artifacts {
 		info.Variants = append(info.Variants, VariantInfo{
 			GeneroMajor: strings.TrimPrefix(a.Variant, "genero"),
 			DownloadURL: AbsoluteDownloadURL(a.DownloadURL),
 			Checksum:    a.SHA256,
+			Size:        a.SizeBytes,
+			UploadedAt:  a.UploadedAt,
+			Uploader:    a.Uploader,
+			Signature:   a.Signature.toSignature(),
 		})
 	}
 	return info, nil
@@ -435,11 +463,32 @@ func VariantsFor(slug, version string) ([]string, error) {
 // ─── Internal: new-protocol types ────────────────────────────────────────────
 
 type apiArtifact struct {
-	Variant     string `json:"variant"`
-	Filename    string `json:"filename"`
-	SizeBytes   int64  `json:"size_bytes"`
-	SHA256      string `json:"sha256"`
-	DownloadURL string `json:"download_url"`
+	Variant     string        `json:"variant"`
+	Filename    string        `json:"filename"`
+	SizeBytes   int64         `json:"size_bytes"`
+	SHA256      string        `json:"sha256"`
+	DownloadURL string        `json:"download_url"`
+	UploadedAt  string        `json:"uploaded_at"`
+	Uploader    string        `json:"uploader"`
+	Signature   *apiSignature `json:"signature"`
+}
+
+// apiSignature is the Layer 1 registry signature envelope returned per
+// artifact. Nil for unsigned rows (pre-signing history, or when the registry
+// has no working key configured).
+type apiSignature struct {
+	KeyID string `json:"keyid"`
+	Alg   string `json:"alg"`
+	Sig   string `json:"sig"`
+}
+
+// toSignature converts the wire signature envelope to the exported type,
+// returning nil for an absent (unsigned) signature.
+func (s *apiSignature) toSignature() *Signature {
+	if s == nil {
+		return nil
+	}
+	return &Signature{KeyID: s.KeyID, Alg: s.Alg, Sig: s.Sig}
 }
 
 type apiVersionSummary struct {
