@@ -1,6 +1,6 @@
 # Spec: Manifest ↔ registry dependency cross-check & fallback
 
-**Status:** Draft
+**Status:** ✅ Implemented — shipped ([internal/installer/crosscheck.go](../internal/installer/crosscheck.go))
 **Date:** 2026-07-09
 **Author:** Mike Folcher
 **Motivation:** the `poiapi@1.4.0` incident — a package installed with **zero of its 11

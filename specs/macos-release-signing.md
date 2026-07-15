@@ -1,6 +1,6 @@
 # Spec: Sign & notarize the macOS release binaries
 
-**Status:** Draft
+**Status:** ✅ Implemented — sign+notarize pipeline shipped (GIS-250); production 4Js Developer ID swap tracked in GIS-257
 **Date:** 2026-07-14
 **Author:** Mike Folcher
 **Motivation:** [Issue #11](https://github.com/4js-mikefolcher/fglpkg/issues/11) — the macOS release

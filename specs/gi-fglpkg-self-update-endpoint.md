@@ -1,6 +1,6 @@
 # Spec: Genero Intelligence service — `fglpkg` latest-release endpoint
 
-**Status:** Draft
+**Status:** 📋 Not started — GIS-256 (spec ready)
 **Date:** 2026-07-14
 **Author:** Mike Folcher
 **Motivation:** The fglpkg client's [self-update.md](self-update.md) needs a registry endpoint that

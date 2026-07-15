@@ -1,6 +1,6 @@
 # Spec: Artifactory as a secondary package repository
 
-**Status:** Draft — design decisions resolved 2026-07-10 (see §17); ready for implementation
+**Status:** ⏳ In progress — GIS-249 (design decisions resolved 2026-07-10, see §17; not yet on `main`)
 **Date:** 2026-07-10
 **Author:** Mike Folcher
 **Motivation:** A customer hosts their **internal** BDL packages in their own **JFrog

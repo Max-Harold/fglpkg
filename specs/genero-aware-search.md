@@ -1,6 +1,6 @@
 # Spec: Genero-aware `fglpkg search` — annotate results by compatibility with the running Genero version
 
-**Status:** Draft
+**Status:** 📋 Not started — GIS-254 (spec ready)
 **Date:** 2026-07-14
 **Author:** Mike Folcher
 **Motivation:** `fglpkg search` is the one discovery command that is completely blind to the Genero

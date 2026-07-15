@@ -1,6 +1,6 @@
 # Spec: Webcomponent GWA flag filtering & pure-WC install namespace
 
-**Status:** Draft
+**Status:** 📋 Not started — GIS-248 (spec ready)
 **Date:** 2026-07-12
 **Author:** Mike Folcher
 **Tracking:** Follow-up to [webcomponent-packages.md](webcomponent-packages.md) (Phase 4 — Env & GWA)

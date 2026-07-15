@@ -1,6 +1,6 @@
 # Spec: `importRoot` — rebase the package archive to a build-output subdirectory
 
-**Status:** Draft
+**Status:** ✅ Implemented — shipped (GIS-252, `c4e02a7`)
 **Date:** 2026-07-14
 **Author:** Mike Folcher
 **Motivation:** Field report while testing `fglpkg publish`. A project compiles its modules into a

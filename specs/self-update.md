@@ -1,6 +1,6 @@
 # Spec: `fglpkg self-update` — self-updating binary + periodic update notices
 
-**Status:** Draft
+**Status:** 📋 Not started — GIS-255 (spec ready)
 **Date:** 2026-07-14
 **Author:** Mike Folcher
 **Motivation:** fglpkg ships as a standalone binary users copy into `PATH` by hand
