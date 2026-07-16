@@ -2792,16 +2792,20 @@ func cmdDocs(args []string) error {
 // findInstalledPackage looks for a package by name, checking local then global.
 // Returns the package directory, its manifest, and an error.
 func findInstalledPackage(name string) (string, *manifest.Manifest, error) {
+	// Packages are installed under their canonical slug (GIS-271), so accept any
+	// spelling the user types — under_score_test, Under-Score-Test — and look up
+	// the canonical directory the resolver/installer actually wrote.
+	slug := slugutil.Canonical(name)
 	if isProjectDir() {
 		wd, _ := os.Getwd()
-		localDir := filepath.Join(wd, ".fglpkg", "packages", name)
+		localDir := filepath.Join(wd, ".fglpkg", "packages", slug)
 		if m, err := manifest.Load(localDir); err == nil {
 			return localDir, m, nil
 		}
 	}
 	globalHome, err := fglpkgHome()
 	if err == nil {
-		globalDir := filepath.Join(globalHome, "packages", name)
+		globalDir := filepath.Join(globalHome, "packages", slug)
 		if m, err := manifest.Load(globalDir); err == nil {
 			return globalDir, m, nil
 		}
