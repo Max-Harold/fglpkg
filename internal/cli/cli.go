@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/4js-mikefolcher/fglpkg/internal/config"
 	"github.com/4js-mikefolcher/fglpkg/internal/credentials"
@@ -33,6 +34,7 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/semver"
 	slugutil "github.com/4js-mikefolcher/fglpkg/internal/slug"
+	"github.com/4js-mikefolcher/fglpkg/internal/updatecheck"
 	"github.com/4js-mikefolcher/fglpkg/internal/workspace"
 )
 
@@ -117,59 +119,122 @@ func Execute() error {
 		return nil
 	}
 
-	switch cmd {
-	case "init":
-		return cmdInit(args)
-	case "install":
-		return cmdInstall(args)
-	case "remove":
-		return cmdRemove(args)
-	case "update":
-		return cmdUpdate(args)
-	case "list":
-		return cmdList(args)
-	case "env":
-		return cmdEnv(args)
-	case "search":
-		return cmdSearch(args)
-	case "info", "view":
-		return cmdInfo(args)
-	case "outdated":
-		return cmdOutdated(args)
-	case "audit":
-		return cmdAudit(args)
-	case "sbom":
-		return cmdSbom(args)
-	case "completion":
-		return cmdCompletion(args)
-	case "publish":
-		return cmdPublish(args)
-	case "pack":
-		return cmdPack(args)
-	case "login":
-		return cmdLogin(args)
-	case "logout":
-		return cmdLogout(args)
-	case "whoami":
-		return cmdWhoami(args)
-	case "workspace", "ws":
-		return cmdWorkspace(args)
-	case "registry":
-		return cmdRegistry(args)
-	case "run":
-		return cmdRun(args)
-	case "bdl":
-		return cmdBdl(args)
-	case "docs":
-		return cmdDocs(args)
-	case "version":
-		return cmdVersion(args)
-	case "help", "--help", "-h":
-		printUsage()
+	// Passive update-check (GIS-255): kicked off in the background now; any
+	// notice prints after the command finishes. Never blocks, never changes the
+	// exit code, stays silent on error.
+	pending := startUpdateCheck(cmd)
+	err := func() error {
+		switch cmd {
+		case "init":
+			return cmdInit(args)
+		case "install":
+			return cmdInstall(args)
+		case "remove":
+			return cmdRemove(args)
+		case "update":
+			return cmdUpdate(args)
+		case "list":
+			return cmdList(args)
+		case "env":
+			return cmdEnv(args)
+		case "search":
+			return cmdSearch(args)
+		case "info", "view":
+			return cmdInfo(args)
+		case "outdated":
+			return cmdOutdated(args)
+		case "audit":
+			return cmdAudit(args)
+		case "sbom":
+			return cmdSbom(args)
+		case "completion":
+			return cmdCompletion(args)
+		case "publish":
+			return cmdPublish(args)
+		case "pack":
+			return cmdPack(args)
+		case "login":
+			return cmdLogin(args)
+		case "logout":
+			return cmdLogout(args)
+		case "whoami":
+			return cmdWhoami(args)
+		case "workspace", "ws":
+			return cmdWorkspace(args)
+		case "registry":
+			return cmdRegistry(args)
+		case "run":
+			return cmdRun(args)
+		case "bdl":
+			return cmdBdl(args)
+		case "docs":
+			return cmdDocs(args)
+		case "version":
+			return cmdVersion(args)
+		case "help", "--help", "-h":
+			printUsage()
+			return nil
+		default:
+			return fmt.Errorf("unknown command: %q\nRun 'fglpkg help' for usage", cmd)
+		}
+	}()
+	pending.Finish(os.Stderr, semverNewer)
+	return err
+}
+
+// startUpdateCheck starts the passive "a new version is available" check for
+// this invocation (GIS-255). It returns nil when the check should not run; a
+// nil *Pending is safe to Finish.
+func startUpdateCheck(cmd string) *updatecheck.Pending {
+	home, err := fglpkgHome()
+	if err != nil {
 		return nil
-	default:
-		return fmt.Errorf("unknown command: %q\nRun 'fglpkg help' for usage", cmd)
 	}
+	settings, _ := config.LoadUpdateSettings(home) // usable defaults even on error
+	state := updatecheck.LoadState(home)
+	env := updatecheck.Env{
+		Version:     Version,
+		Command:     cmd,
+		CI:          os.Getenv("CI") != "",
+		NoCheckEnv:  os.Getenv("FGLPKG_NO_UPDATE_CHECK") != "",
+		StdoutIsTTY: isTerminal(os.Stdout),
+		Enabled:     settings.Enabled,
+		Interval:    settings.Interval,
+		Now:         time.Now(),
+		LastCheck:   state.LastCheck,
+	}
+	return updatecheck.Start(home, env, state.LatestKnown, fetchLatestVersion)
+}
+
+// fetchLatestVersion returns the latest published fglpkg version from the
+// registry — the network call behind the passive check.
+func fetchLatestVersion() (string, error) {
+	lr, err := registry.FetchLatestFGLPkg()
+	if err != nil {
+		return "", err
+	}
+	return lr.Version, nil
+}
+
+// semverNewer reports whether latest is a newer release than current.
+// Unparseable versions (e.g. a "dev" build) are treated as not newer.
+func semverNewer(current, latest string) bool {
+	c, err1 := semver.Parse(current)
+	l, err2 := semver.Parse(latest)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return l.GreaterThan(c)
+}
+
+// isTerminal reports whether f is a character device (an interactive terminal),
+// used to keep the update notice out of piped or scripted output.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // ─── init ─────────────────────────────────────────────────────────────────────
