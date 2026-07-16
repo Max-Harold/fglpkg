@@ -33,6 +33,7 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/provider"
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/semver"
+	slugutil "github.com/4js-mikefolcher/fglpkg/internal/slug"
 	"github.com/4js-mikefolcher/fglpkg/internal/workspace"
 )
 
@@ -1336,8 +1337,19 @@ func publishPackage(m *manifest.Manifest, registryURL, generoMajor string, dryRu
 	fmt.Printf("  Package zip: %d bytes (SHA256: %s)\n", len(zipData), checksum)
 
 	variant := artifactVariant(m, generoMajor)
-	filename := artifactFilename(m.Name, m.Version, variant)
-	slug := m.Name
+	// The slug is the canonical (PyPI/PEP 503) form of the name — lowercased,
+	// with runs of '-'/'_'/'.' collapsed to '-' — and is the package's identity
+	// in every /registry/... path. The manifest name is kept as the display
+	// name. Fail early with a clear message rather than letting the registry
+	// reject a non-canonical slug late (GIS-271).
+	slug := slugutil.Canonical(m.Name)
+	if !slugutil.IsValid(slug) {
+		return fmt.Errorf("package name %q normalizes to slug %q, which is not a valid package slug (2-64 chars; lowercase letters, digits, hyphens; must start and end alphanumeric)", m.Name, slug)
+	}
+	if slug != m.Name {
+		fmt.Printf("  Normalized name %q → slug %q\n", m.Name, slug)
+	}
+	filename := artifactFilename(slug, m.Version, variant)
 	visibility := visibilityOverride
 	if visibility == "" {
 		visibility = m.Visibility
