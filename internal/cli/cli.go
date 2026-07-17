@@ -35,6 +35,7 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/selfupdate"
 	"github.com/4js-mikefolcher/fglpkg/internal/semver"
+	"github.com/4js-mikefolcher/fglpkg/internal/signing"
 	slugutil "github.com/4js-mikefolcher/fglpkg/internal/slug"
 	"github.com/4js-mikefolcher/fglpkg/internal/updatecheck"
 	"github.com/4js-mikefolcher/fglpkg/internal/workspace"
@@ -355,6 +356,10 @@ func cmdInstall(args []string) error {
 	// The authoritative load happens later per install path.
 	regManifest, _ := manifest.Load(".")
 	inst := newInstaller(home, regManifest)
+	if flags.noVerifySignature {
+		globalHome, _ := fglpkgHome()
+		inst.WithSigning(signing.EnforceOff, globalHome, defaultRegistry())
+	}
 	projectDir, _ := os.Getwd()
 
 	if isLocal {
@@ -595,6 +600,7 @@ type installFlags struct {
 	force              bool
 	production         bool
 	noManifestFallback bool
+	noVerifySignature  bool
 	scope              manifest.Scope
 	registry           string // --registry <name>: restrict resolution to one repo and pin it
 	pkgs               []string
@@ -622,6 +628,8 @@ func parseInstallFlags(args []string) (installFlags, error) {
 			f.production = true
 		case "--no-manifest-fallback":
 			f.noManifestFallback = true
+		case "--no-verify-signature":
+			f.noVerifySignature = true
 		case "--save-dev", "-D":
 			devSeen = true
 			f.scope = manifest.ScopeDev
@@ -3466,6 +3474,11 @@ func buildInstaller(home string, m *manifest.Manifest) (*installer.Installer, *p
 			inst = inst.WithFetchers(rs.Versions, rs.Info).WithRepoAuth(repoAuth).WithPinDeclarer(rs)
 		}
 	}
+
+	// Layer 1 signature verification. The keys manifest is cached in the
+	// global home even for a local install. Mode comes from FGLPKG_SIGNING /
+	// config.json / the built-in default (warn).
+	inst.WithSigning(signing.EnforceMode(globalHome), globalHome, registryURL)
 	return inst, set
 }
 

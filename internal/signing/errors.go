@@ -44,4 +44,9 @@ var (
 	// ErrSignatureMismatch means the Ed25519 signature did not verify against
 	// the resolved public key over the canonical payload.
 	ErrSignatureMismatch = errors.New("signing: signature does not match")
+
+	// ErrUnsigned means an artifact record carries no signature at all. Whether
+	// this is fatal is the caller's decision (the install enforce mode): under
+	// "warn" it is logged and skipped, under "require" it aborts the install.
+	ErrUnsigned = errors.New("signing: artifact is not signed")
 )

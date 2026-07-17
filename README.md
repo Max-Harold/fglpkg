@@ -261,6 +261,7 @@ eval "$(fglpkg env --global)"
 | `FGLPKG_PUBLISH_REGISTRY` | Name of the repository `fglpkg publish` targets when no `--registry` is given. Overrides the manifest's `defaultRegistry`. See [Secondary Package Repositories](#secondary-package-repositories-jfrog-artifactory) |
 | `FGLPKG_GENERO_VERSION` | Override Genero version detection |
 | `FGLPKG_INSTALL_CONCURRENCY` | Cap parallel downloads during install (default 4) |
+| `FGLPKG_SIGNING` | Layer 1 signature enforcement: `require`, `warn`, or `off`. Overrides `signing.enforce` in `config.json` |
 | `FGLPKG_NO_UPDATE_CHECK` | Set to disable the passive "new version available" notice (also configurable via `updateCheck` in `~/.fglpkg/config.json`). Always off for `dev` builds, in CI, and for non-interactive output |
 | `FGLLDPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
 | `CLASSPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
@@ -276,6 +277,52 @@ fglpkg login --token gpr_…       # or: export FGLPKG_TOKEN=gpr_…
 ```
 
 All commands authenticate using the same OAuth/PAT credentials stored by `fglpkg login`.
+
+## Signature verification (Layer 1)
+
+Every artifact the registry serves is signed with **Ed25519** over a canonical
+(RFC 8785 / JCS) payload of its identity and `sha256`. On install, `fglpkg`
+reconstructs that payload and verifies the signature — proving the bytes you
+received are exactly what the registry stored (defence against transport,
+mirror, and cache tampering), a layer above the plain SHA256 integrity check.
+
+**How trust is anchored.** The registry's working public keys are published in
+a signed manifest at `GET /registry/.well-known/keys.json`. That manifest is
+itself signed by a **root key whose public half is pinned in the fglpkg binary**
+(`internal/signing/root.go`) — it is never fetched, so a rogue registry cannot
+substitute its own keys. The verified manifest is cached at `~/.fglpkg/keys.json`
+so reinstalls and `--production` deploys work offline.
+
+**What it does not do.** It does not prove *who built* the package (that is
+Layer 2, Sigstore provenance — opt-in, not in this release), and Java JARs pulled
+from Maven Central keep their existing checksum-only trust.
+
+### Enforcement modes
+
+Set `signing.enforce` in `~/.fglpkg/config.json` (or the `FGLPKG_SIGNING` env
+var, which wins):
+
+```json
+{ "signing": { "enforce": "warn" } }
+```
+
+| Mode | Behaviour |
+|---|---|
+| `warn` *(default)* | A bad or missing signature prints a warning but the install continues. |
+| `require` | A bad or missing signature aborts the install. |
+| `off` | Signature verification is skipped entirely. |
+
+`fglpkg install --no-verify-signature` skips verification for a single run
+(discouraged; for emergencies).
+
+### Auditing
+
+```bash
+fglpkg audit signatures        # re-verify every locked package against the keys manifest
+```
+
+Prints one line per package and exits non-zero if any package is unsigned or
+fails to verify — suitable as a CI gate.
 
 ## Usage
 
@@ -300,6 +347,7 @@ fglpkg env --global                      # Print exports for all global packages
 fglpkg env --gst                         # Print in Genero Studio format
 fglpkg search json                       # Search the registry (matches name/description)
 fglpkg search --all                      # List every package in the registry
+fglpkg audit signatures                  # Verify registry signatures of locked packages
 fglpkg bdl <pkg> <module> [args...]      # Run a BDL program from a package
 fglpkg bdl --list                        # List available BDL programs
 
