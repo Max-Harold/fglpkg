@@ -75,6 +75,37 @@ FOR /F "tokens=*" %%i IN ('fglpkg env --global') DO %%i
 
 Use `--global` in shell profiles so all installed packages are available regardless of your current directory.
 
+### Keeping fglpkg up to date
+
+Once installed, fglpkg can update itself — no need to re-download by hand:
+
+```bash
+fglpkg self-update            # download, verify, and install the latest release
+fglpkg self-update --check    # just report whether a newer version exists
+```
+
+`self-update` fetches the latest stable build for your OS/architecture and verifies its
+**Ed25519 release signature** (chained to a key pinned in the binary) **and** its SHA-256
+checksum before atomically replacing the running executable. It never installs an unverified
+binary; on any verification failure it prints a manual-download link instead. Scope is
+latest-stable only — no version pinning, pre-releases, or downgrades. `--yes` skips the
+confirmation prompt (for scripts); `--force` reinstalls even when you are already current.
+
+fglpkg also **passively notices** new releases: at most once every 24h, after a command
+finishes, it prints a one-line "a new version is available" hint to stderr. It never blocks a
+command, changes an exit code, or reports network errors. Turn it off with
+`FGLPKG_NO_UPDATE_CHECK=1`, or in `~/.fglpkg/config.json`:
+
+```json
+{
+  "updateCheck": false,
+  "updateCheckInterval": "24h"
+}
+```
+
+Self-update is unavailable for `dev` builds (built from source) and for installs managed by a
+package manager such as Homebrew — update those with the tool that installed them.
+
 ## Building from Source
 
 ```bash
@@ -231,6 +262,7 @@ eval "$(fglpkg env --global)"
 | `FGLPKG_GENERO_VERSION` | Override Genero version detection |
 | `FGLPKG_INSTALL_CONCURRENCY` | Cap parallel downloads during install (default 4) |
 | `FGLPKG_SIGNING` | Layer 1 signature enforcement: `require`, `warn`, or `off`. Overrides `signing.enforce` in `config.json` |
+| `FGLPKG_NO_UPDATE_CHECK` | Set to disable the passive "new version available" notice (also configurable via `updateCheck` in `~/.fglpkg/config.json`). Always off for `dev` builds, in CI, and for non-interactive output |
 | `FGLLDPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
 | `CLASSPATH` | Auto-managed by `fglpkg env` (prepends, preserves existing value) |
 
@@ -365,6 +397,8 @@ fglpkg docs <package>                    # List documentation files
 fglpkg docs <package> <file>             # Display a documentation file
 
 # Misc
+fglpkg self-update                       # Update fglpkg to the latest release
+fglpkg self-update --check               # Report whether an update is available
 fglpkg version                           # Print version and build info
 fglpkg help                              # Show help
 ```

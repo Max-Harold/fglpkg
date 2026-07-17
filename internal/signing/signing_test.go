@@ -1,263 +1,276 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 )
 
-// testKey builds a deterministic Ed25519 key pair from a one-byte seed pattern
-// so golden vectors are reproducible across runs.
-func testKey(seedByte byte) (pub string, priv ed25519.PrivateKey) {
-	seed := make([]byte, ed25519.SeedSize)
-	for i := range seed {
-		seed[i] = seedByte
-	}
-	priv = ed25519.NewKeyFromSeed(seed)
-	pub = base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey))
-	return pub, priv
+// keyFromSeed derives a deterministic Ed25519 keypair and returns the private
+// key plus its standard-base64 raw public key.
+func keyFromSeed(t *testing.T, b byte) (ed25519.PrivateKey, string) {
+	t.Helper()
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{b}, ed25519.SeedSize))
+	pub := priv.Public().(ed25519.PublicKey)
+	return priv, base64.StdEncoding.EncodeToString(pub)
 }
 
-func sign(priv ed25519.PrivateKey, msg []byte) string {
+func signB64(priv ed25519.PrivateKey, msg []byte) string {
 	return base64.StdEncoding.EncodeToString(ed25519.Sign(priv, msg))
 }
 
-// ─── Canonicalization golden vectors ───────────────────────────────────────
+// goldenFields / goldenCanonical are the frozen cross-language vector from the
+// GI repo (tests/unit/artifact-signing.test.ts). The canonical bytes MUST match
+// byte-for-byte or client verification silently diverges from the signer.
+var goldenFields = ArtifactFields{
+	Name:       "chart-3d",
+	Version:    "1.0.0",
+	Variant:    "genero6",
+	SHA256:     "b6e1",
+	Size:       87477,
+	UploadedAt: "2026-07-05T14:22:00Z",
+	Uploader:   "partner:pA",
+}
 
-func TestCanonicalGoldenVectors(t *testing.T) {
-	cases := []struct {
-		name string
-		p    Payload
-		want string
-	}{
-		{
-			name: "typical artifact",
-			p: Payload{
-				Name: "chart-3d", Version: "1.0.0", Variant: "genero6",
-				SHA256: "b6e1", Size: 87477,
-				UploadedAt: "2026-07-02 14:22:00", Uploader: "partner:pt_7f2a",
-			},
-			want: `{"artifact":{"name":"chart-3d","sha256":"b6e1","size":87477,` +
-				`"uploaded_at":"2026-07-02 14:22:00","uploader":"partner:pt_7f2a",` +
-				`"variant":"genero6","version":"1.0.0"}}`,
-		},
-		{
-			name: "boundary size zero, empty uploader",
-			p: Payload{
-				Name: "qrcode", Version: "0.0.1", Variant: "genero6",
-				SHA256: "abc", Size: 0, UploadedAt: "2026-01-01T00:00:00Z", Uploader: "",
-			},
-			want: `{"artifact":{"name":"qrcode","sha256":"abc","size":0,` +
-				`"uploaded_at":"2026-01-01T00:00:00Z","uploader":"",` +
-				`"variant":"genero6","version":"0.0.1"}}`,
-		},
-		{
-			name: "boundary large size",
-			p: Payload{
-				Name: "big", Version: "2.3.4", Variant: "default",
-				SHA256: "ff", Size: 999999999, UploadedAt: "2026-07-06 16:39:08", Uploader: "partner:x",
-			},
-			want: `{"artifact":{"name":"big","sha256":"ff","size":999999999,` +
-				`"uploaded_at":"2026-07-06 16:39:08","uploader":"partner:x",` +
-				`"variant":"default","version":"2.3.4"}}`,
-		},
+const goldenCanonical = `{"artifact":{"name":"chart-3d","sha256":"b6e1","size":87477,"uploaded_at":"2026-07-05T14:22:00Z","uploader":"partner:pA","variant":"genero6","version":"1.0.0"}}`
+
+func TestCanonicalArtifactPayloadGoldenVector(t *testing.T) {
+	got, err := CanonicalArtifactPayload(goldenFields)
+	if err != nil {
+		t.Fatalf("CanonicalArtifactPayload: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := string(tc.p.Canonical())
-			if got != tc.want {
-				t.Errorf("canonical mismatch\n got: %s\nwant: %s", got, tc.want)
-			}
-		})
+	if string(got) != goldenCanonical {
+		t.Errorf("canonical mismatch\n got: %s\nwant: %s", got, goldenCanonical)
 	}
 }
 
-// TestCanonicalKeyOrderIndependence proves that object key insertion order does
-// not affect the canonical bytes — the core JCS guarantee.
-func TestCanonicalKeyOrderIndependence(t *testing.T) {
-	a, err := canonicalJSON(map[string]any{"b": "2", "a": "1", "c": int64(3)})
+func TestCanonicalizeSortsKeys(t *testing.T) {
+	got, err := canonicalize(map[string]interface{}{"b": json.Number("1"), "a": "x", "c": true})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("canonicalize: %v", err)
 	}
-	b, err := canonicalJSON(map[string]any{"c": int64(3), "a": "1", "b": "2"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(a) != string(b) {
-		t.Fatalf("key order affected output: %s vs %s", a, b)
-	}
-	if want := `{"a":"1","b":"2","c":3}`; string(a) != want {
-		t.Fatalf("got %s want %s", a, want)
+	if want := `{"a":"x","b":1,"c":true}`; string(got) != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
 
-func TestCanonicalStringEscaping(t *testing.T) {
-	got, err := canonicalJSON(map[string]any{"k": "a\"b\\c\n\td"})
+func TestCanonicalizeNamedEscapes(t *testing.T) {
+	// The control chars with short escapes, plus " and \. (No \u case here — see
+	// TestCanonicalizeControlCharUnicodeEscape.)
+	in := "a\"b\\c\nd\te\bf\fg\rh"
+	got, err := canonicalize(map[string]interface{}{"k": in})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("canonicalize: %v", err)
 	}
-	want := `{"k":"a\"b\\c\n\td"}`
+	// The canonical OUTPUT holds literal backslash escapes, so want is a raw
+	// string (backslash-n is two characters, not a newline).
+	want := `{"k":"a\"b\\c\nd\te\bf\fg\rh"}`
 	if string(got) != want {
-		t.Fatalf("got %s want %s", got, want)
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
 
-func TestCanonicalRejectsFloat(t *testing.T) {
-	if _, err := canonicalJSON(map[string]any{"n": 1.5}); err == nil {
-		t.Fatal("expected error for non-integer number")
-	}
-}
-
-// ─── Artifact verification ──────────────────────────────────────────────────
-
-func validKeyManifest(t *testing.T, keyid, pub, from, to string) *Manifest {
-	t.Helper()
-	return &Manifest{
-		Keys:     []Key{{KeyID: keyid, Alg: "ed25519", Pub: pub, ValidFrom: from, ValidTo: to}},
-		IssuedAt: "2026-07-06T00:00:00Z",
-	}
-}
-
-func TestVerifyArtifactHappyPath(t *testing.T) {
-	pub, priv := testKey(0x11)
-	m := validKeyManifest(t, "test-key-1", pub, "2026-07-01T00:00:00Z", "2027-07-01T00:00:00Z")
-
-	p := Payload{Name: "qrcode", Version: "1.0.0", Variant: "genero6",
-		SHA256: "deadbeef", Size: 512, UploadedAt: "2026-07-02 14:22:00", Uploader: "partner:x"}
-	sig := ArtifactSignature{KeyID: "test-key-1", Alg: "ed25519", Sig: sign(priv, p.Canonical())}
-
-	if err := m.VerifyArtifact(p, sig); err != nil {
-		t.Fatalf("expected verify to pass, got %v", err)
-	}
-}
-
-func TestVerifyArtifactTampered(t *testing.T) {
-	pub, priv := testKey(0x22)
-	m := validKeyManifest(t, "k", pub, "2026-01-01T00:00:00Z", "2030-01-01T00:00:00Z")
-
-	p := Payload{Name: "p", Version: "1.0.0", Variant: "genero6",
-		SHA256: "aaaa", Size: 10, UploadedAt: "2026-07-02 14:22:00", Uploader: "partner:x"}
-	sig := ArtifactSignature{KeyID: "k", Sig: sign(priv, p.Canonical())}
-
-	p.Size = 11 // tamper after signing
-	err := m.VerifyArtifact(p, sig)
-	var mm *ErrSignatureMismatch
-	if !errors.As(err, &mm) {
-		t.Fatalf("expected *ErrSignatureMismatch, got %v", err)
-	}
-}
-
-func TestVerifyArtifactUnknownKey(t *testing.T) {
-	pub, priv := testKey(0x33)
-	m := validKeyManifest(t, "k1", pub, "2026-01-01T00:00:00Z", "2030-01-01T00:00:00Z")
-	p := Payload{Name: "p", Version: "1", Variant: "v", SHA256: "x", Size: 1,
-		UploadedAt: "2026-07-02 14:22:00"}
-	sig := ArtifactSignature{KeyID: "k2", Sig: sign(priv, p.Canonical())}
-	if err := m.VerifyArtifact(p, sig); !errors.Is(err, ErrKeyUnknown) {
-		t.Fatalf("expected ErrKeyUnknown, got %v", err)
-	}
-}
-
-func TestVerifyArtifactExpiredWindow(t *testing.T) {
-	pub, priv := testKey(0x44)
-	m := validKeyManifest(t, "k", pub, "2026-07-10T00:00:00Z", "2027-07-10T00:00:00Z")
-	p := Payload{Name: "p", Version: "1", Variant: "v", SHA256: "x", Size: 1,
-		UploadedAt: "2026-07-02 14:22:00"} // before validFrom
-	sig := ArtifactSignature{KeyID: "k", Sig: sign(priv, p.Canonical())}
-	if err := m.VerifyArtifact(p, sig); !errors.Is(err, ErrKeyExpired) {
-		t.Fatalf("expected ErrKeyExpired, got %v", err)
-	}
-}
-
-// ─── Manifest root verification ─────────────────────────────────────────────
-
-// buildSignedManifest assembles a keys.json signed by a test root key that is
-// temporarily added to the pinned set.
-func buildSignedManifest(t *testing.T, rootKeyID, rootPub string, rootPriv ed25519.PrivateKey, workingKey Key) []byte {
-	t.Helper()
-	keysJSON, _ := json.Marshal([]Key{workingKey})
-	var keysAny any
-	_ = json.Unmarshal(keysJSON, &keysAny)
-
-	issuedAt := "2026-07-06T00:00:00Z"
-	signed, err := canonicalJSON(map[string]any{"issuedAt": issuedAt, "keys": keysAny})
+func TestCanonicalizeControlCharUnicodeEscape(t *testing.T) {
+	// C0 controls without a short escape use \u00xx with LOWERCASE hex. want is
+	// built with Sprintf so no literal \u escape appears in this source file.
+	got, err := canonicalize(map[string]interface{}{"k": "\x01\x1f"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("canonicalize: %v", err)
 	}
-	sig := sign(rootPriv, signed)
-
-	full := map[string]any{
-		"keys":     keysAny,
-		"issuedAt": issuedAt,
-		"sig":      map[string]any{"rootKeyid": rootKeyID, "alg": "ed25519", "sig": sig},
+	want := `{"k":"` + fmt.Sprintf(`\u%04x\u%04x`, 0x01, 0x1f) + `"}`
+	if string(got) != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
-	raw, _ := json.Marshal(full)
-	return raw
 }
 
-func withPinnedRoot(t *testing.T, rk RootKey) {
-	t.Helper()
-	orig := pinnedRootKeys
-	pinnedRootKeys = append([]RootKey{rk}, orig...)
-	t.Cleanup(func() { pinnedRootKeys = orig })
+func TestCanonicalizeRejectsNonInteger(t *testing.T) {
+	if _, err := canonicalize(map[string]interface{}{"n": json.Number("1.5")}); err == nil {
+		t.Error("expected error for json.Number 1.5")
+	}
+	if _, err := canonicalize(map[string]interface{}{"n": 1.5}); err == nil {
+		t.Error("expected error for float64 1.5")
+	}
+	if _, err := canonicalize(map[string]interface{}{"n": 2.0}); err != nil {
+		t.Errorf("integral float64 2.0 should be accepted: %v", err)
+	}
 }
 
-func TestParseAndVerifyManifestHappyPath(t *testing.T) {
-	rootPub, rootPriv := testKey(0x55)
-	withPinnedRoot(t, RootKey{KeyID: "root-x", Pub: rootPub})
-	wkPub, _ := testKey(0x56)
-	wk := Key{KeyID: "wk-1", Alg: "ed25519", Pub: wkPub,
-		ValidFrom: "2026-07-01T00:00:00Z", ValidTo: "2027-07-01T00:00:00Z"}
-
-	raw := buildSignedManifest(t, "root-x", rootPub, rootPriv, wk)
-	m, err := ParseAndVerifyManifest(raw)
+func TestVerifyArtifactRoundTrip(t *testing.T) {
+	priv, pubB64 := keyFromSeed(t, 0x11)
+	payload, err := CanonicalArtifactPayload(goldenFields)
 	if err != nil {
-		t.Fatalf("expected manifest to verify, got %v", err)
+		t.Fatalf("payload: %v", err)
 	}
-	if _, ok := m.KeyByID("wk-1"); !ok {
-		t.Fatal("working key missing after parse")
+	sigB64 := signB64(priv, payload)
+
+	if err := VerifyArtifact(goldenFields, sigB64, pubB64); err != nil {
+		t.Fatalf("VerifyArtifact (valid): %v", err)
 	}
-}
 
-func TestParseAndVerifyManifestUntrustedRoot(t *testing.T) {
-	rootPub, rootPriv := testKey(0x66)
-	// Do NOT pin this root.
-	wkPub, _ := testKey(0x67)
-	wk := Key{KeyID: "wk", Alg: "ed25519", Pub: wkPub,
-		ValidFrom: "2026-07-01T00:00:00Z", ValidTo: "2027-07-01T00:00:00Z"}
-	raw := buildSignedManifest(t, "root-unpinned", rootPub, rootPriv, wk)
-	if _, err := ParseAndVerifyManifest(raw); !errors.Is(err, ErrManifestUnverified) {
-		t.Fatalf("expected ErrManifestUnverified, got %v", err)
+	// Tamper a field: signature must no longer verify.
+	tampered := goldenFields
+	tampered.Size = 87478
+	if err := VerifyArtifact(tampered, sigB64, pubB64); !errors.Is(err, ErrSignatureMismatch) {
+		t.Errorf("tampered payload: got %v, want ErrSignatureMismatch", err)
 	}
-}
 
-func TestParseAndVerifyManifestTampered(t *testing.T) {
-	rootPub, rootPriv := testKey(0x77)
-	withPinnedRoot(t, RootKey{KeyID: "root-y", Pub: rootPub})
-	wkPub, _ := testKey(0x78)
-	wk := Key{KeyID: "wk", Alg: "ed25519", Pub: wkPub,
-		ValidFrom: "2026-07-01T00:00:00Z", ValidTo: "2027-07-01T00:00:00Z"}
-	raw := buildSignedManifest(t, "root-y", rootPub, rootPriv, wk)
+	// Wrong key.
+	_, otherPub := keyFromSeed(t, 0x22)
+	if err := VerifyArtifact(goldenFields, sigB64, otherPub); !errors.Is(err, ErrSignatureMismatch) {
+		t.Errorf("wrong key: got %v, want ErrSignatureMismatch", err)
+	}
 
-	// Tamper with issuedAt after signing.
-	var full map[string]any
-	_ = json.Unmarshal(raw, &full)
-	full["issuedAt"] = "2099-01-01T00:00:00Z"
-	tampered, _ := json.Marshal(full)
-
-	if _, err := ParseAndVerifyManifest(tampered); !errors.Is(err, ErrManifestUnverified) {
-		t.Fatalf("expected ErrManifestUnverified for tampered manifest, got %v", err)
+	// Malformed signature encoding is still a mismatch, not a panic.
+	if err := VerifyArtifact(goldenFields, "!!!not-base64!!!", pubB64); !errors.Is(err, ErrSignatureMismatch) {
+		t.Errorf("bad sig encoding: got %v, want ErrSignatureMismatch", err)
 	}
 }
 
-// TestPinnedRootDecodes guards against a malformed pinned production/test root
-// key (wrong length / bad base64).
-func TestPinnedRootDecodes(t *testing.T) {
-	for _, rk := range pinnedRootKeys {
-		if _, err := decodeRawPub(rk.Pub); err != nil {
-			t.Errorf("pinned root %q does not decode: %v", rk.KeyID, err)
+// signedManifest builds a manifest with one working key, signed by rootPriv.
+func signedManifest(t *testing.T, rootPriv ed25519.PrivateKey, workingPubB64 string) *Manifest {
+	t.Helper()
+	m := &Manifest{
+		IssuedAt: "2026-07-05T00:00:00Z",
+		Keys: []Key{{
+			KeyID:     "gi-2026-1",
+			Alg:       "ed25519",
+			Pub:       workingPubB64,
+			ValidFrom: "2026-01-01T00:00:00Z",
+			ValidTo:   "2027-01-01T00:00:00Z",
+		}},
+	}
+	input, err := m.SigningInput()
+	if err != nil {
+		t.Fatalf("SigningInput: %v", err)
+	}
+	m.Sig = ManifestSig{RootKeyID: "root-1", Alg: "ed25519", Sig: signB64(rootPriv, input)}
+	return m
+}
+
+func TestManifestVerify(t *testing.T) {
+	rootPriv, rootPub := keyFromSeed(t, 0x07)
+	_, workingPub := keyFromSeed(t, 0x09)
+	m := signedManifest(t, rootPriv, workingPub)
+	roots := []Root{{KeyID: "root-1", PubB64: rootPub}}
+
+	if err := m.Verify(roots); err != nil {
+		t.Fatalf("Verify (valid): %v", err)
+	}
+
+	// Wrong pinned root.
+	_, otherRootPub := keyFromSeed(t, 0x08)
+	if err := m.Verify([]Root{{KeyID: "root-1", PubB64: otherRootPub}}); !errors.Is(err, ErrManifestUnverified) {
+		t.Errorf("wrong root: got %v, want ErrManifestUnverified", err)
+	}
+
+	// Unknown rootKeyid (no pinned root at all).
+	if err := m.Verify(nil); !errors.Is(err, ErrManifestUnverified) {
+		t.Errorf("no pinned root: got %v, want ErrManifestUnverified", err)
+	}
+
+	// Tamper issuedAt: recomputed signing input no longer matches the signature.
+	tampered := *m
+	tampered.IssuedAt = "2020-01-01T00:00:00Z"
+	if err := tampered.Verify(roots); !errors.Is(err, ErrManifestUnverified) {
+		t.Errorf("tampered issuedAt: got %v, want ErrManifestUnverified", err)
+	}
+}
+
+func TestManifestSelectKey(t *testing.T) {
+	rootPriv, _ := keyFromSeed(t, 0x07)
+	_, workingPub := keyFromSeed(t, 0x09)
+	m := signedManifest(t, rootPriv, workingPub)
+
+	within := time.Date(2026, 7, 5, 14, 22, 0, 0, time.UTC)
+	if _, err := m.SelectKey("gi-2026-1", within); err != nil {
+		t.Errorf("in-window: %v", err)
+	}
+	after := time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := m.SelectKey("gi-2026-1", after); !errors.Is(err, ErrKeyExpired) {
+		t.Errorf("out-of-window: got %v, want ErrKeyExpired", err)
+	}
+	if _, err := m.SelectKey("no-such-key", within); !errors.Is(err, ErrKeyUnknown) {
+		t.Errorf("unknown keyid: got %v, want ErrKeyUnknown", err)
+	}
+}
+
+func TestManifestValidKeys(t *testing.T) {
+	rootPriv, _ := keyFromSeed(t, 0x07)
+	_, workingPub := keyFromSeed(t, 0x09)
+	m := signedManifest(t, rootPriv, workingPub)
+
+	if got := m.ValidKeys(time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)); len(got) != 1 {
+		t.Errorf("in-window: got %d valid keys, want 1", len(got))
+	}
+	if got := m.ValidKeys(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); len(got) != 0 {
+		t.Errorf("out-of-window: got %d valid keys, want 0", len(got))
+	}
+}
+
+func TestManifestRoundTripJSON(t *testing.T) {
+	rootPriv, rootPub := keyFromSeed(t, 0x07)
+	_, workingPub := keyFromSeed(t, 0x09)
+	m := signedManifest(t, rootPriv, workingPub)
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	parsed, err := ParseManifest(data)
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	if err := parsed.Verify([]Root{{KeyID: "root-1", PubB64: rootPub}}); err != nil {
+		t.Errorf("verify after JSON round-trip: %v", err)
+	}
+}
+
+func TestVerifyDetachedRoundTrip(t *testing.T) {
+	priv, pubB64 := keyFromSeed(t, 0x33)
+	data := []byte("b6e1  fglpkg-darwin-arm64\n")
+	sigB64 := signB64(priv, data)
+
+	if err := VerifyDetached(data, sigB64, pubB64); err != nil {
+		t.Fatalf("VerifyDetached (valid): %v", err)
+	}
+	// A trailing newline on the .sig contents is tolerated.
+	if err := VerifyDetached(data, sigB64+"\n", pubB64); err != nil {
+		t.Errorf("trailing newline: %v", err)
+	}
+	// Tampered data.
+	if err := VerifyDetached([]byte("deadbeef  fglpkg-darwin-arm64\n"), sigB64, pubB64); !errors.Is(err, ErrSignatureMismatch) {
+		t.Errorf("tampered data: got %v, want ErrSignatureMismatch", err)
+	}
+}
+
+// TestPinnedRootsAreValid guards against a typo'd or truncated pinned root: each
+// must have a keyid and decode to a 32-byte Ed25519 public key.
+func TestPinnedRootsAreValid(t *testing.T) {
+	roots := PinnedRoots()
+	if len(roots) == 0 {
+		t.Skip("no roots pinned yet")
+	}
+	seen := map[string]bool{}
+	for _, r := range roots {
+		if r.KeyID == "" {
+			t.Error("pinned root has an empty KeyID")
+		}
+		if seen[r.KeyID] {
+			t.Errorf("duplicate pinned root keyid %q", r.KeyID)
+		}
+		seen[r.KeyID] = true
+		raw, err := base64.StdEncoding.DecodeString(r.PubB64)
+		if err != nil {
+			t.Errorf("root %q: pub is not valid standard base64: %v", r.KeyID, err)
+			continue
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			t.Errorf("root %q: pub is %d bytes, want %d", r.KeyID, len(raw), ed25519.PublicKeySize)
 		}
 	}
 }

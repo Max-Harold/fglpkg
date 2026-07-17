@@ -88,7 +88,7 @@ func auditOne(m *signing.Manifest, name, version, variant, sha256 string, size i
 		fmt.Printf("✗ %-40s ERROR: signature missing\n", label)
 		return false
 	}
-	p := signing.Payload{
+	p := signing.ArtifactFields{
 		Name: name, Version: version, Variant: variant,
 		SHA256: sha256, Size: size, UploadedAt: uploadedAt, Uploader: uploader,
 	}

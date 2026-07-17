@@ -65,7 +65,7 @@ func LoadManifest(home, registryBase string) (*Manifest, error) {
 		}
 		return nil, fmt.Errorf("cannot fetch keys manifest: %w", err)
 	}
-	m, err := ParseAndVerifyManifest(raw)
+	m, err := parseAndVerify(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func loadCacheIgnoringAge(home string) (*Manifest, bool) {
 	if err != nil {
 		return nil, false
 	}
-	m, err := ParseAndVerifyManifest(raw)
+	m, err := parseAndVerify(raw)
 	if err != nil {
 		return nil, false
 	}

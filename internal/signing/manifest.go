@@ -1,168 +1,137 @@
 package signing
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
-// Key is one working public key from the signed keys manifest.
+// Key is one working (signing) key entry in a keys manifest.
 type Key struct {
 	KeyID     string `json:"keyid"`
 	Alg       string `json:"alg"`
-	Pub       string `json:"pub"` // base64 raw 32-byte Ed25519 public key
-	ValidFrom string `json:"validFrom"`
-	ValidTo   string `json:"validTo"`
+	Pub       string `json:"pub"`       // standard base64 of the raw 32-byte Ed25519 public key
+	ValidFrom string `json:"validFrom"` // RFC 3339
+	ValidTo   string `json:"validTo"`   // RFC 3339
 }
 
-// manifestSig is the root-signature block of the manifest.
-type manifestSig struct {
+// ManifestSig is the detached root signature block attached to a manifest.
+type ManifestSig struct {
 	RootKeyID string `json:"rootKeyid"`
 	Alg       string `json:"alg"`
-	Sig       string `json:"sig"`
+	Sig       string `json:"sig"` // standard base64 of the raw 64-byte Ed25519 signature
 }
 
-// Manifest is a parsed and root-verified keys manifest.
+// Manifest is the keys.json document: a set of working keys plus a detached
+// signature over {issuedAt, keys} made by the offline root key.
 type Manifest struct {
-	Keys     []Key       `json:"keys"`
 	IssuedAt string      `json:"issuedAt"`
-	Sig      manifestSig `json:"sig"`
+	Keys     []Key       `json:"keys"`
+	Sig      ManifestSig `json:"sig"`
 }
 
-// ParseAndVerifyManifest parses raw keys.json bytes and verifies the manifest
-// signature against a pinned root key. It returns ErrManifestUnverified if the
-// root is untrusted or the signature does not verify — the caller must never
-// trust the keys inside an unverified manifest.
-func ParseAndVerifyManifest(raw []byte) (*Manifest, error) {
+// ParseManifest decodes keys.json bytes.
+func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("invalid keys manifest: %w", err)
-	}
-	if err := verifyManifestRoot(raw, m.Sig); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("signing: parse keys manifest: %w", err)
 	}
 	return &m, nil
 }
 
-// verifyManifestRoot verifies that raw's {issuedAt, keys} canonicalization is
-// signed by the pinned root key named in sig. It canonicalizes from the raw
-// JSON (not the typed struct) so any fields the registry may add to a key entry
-// are preserved and included in the signed bytes, exactly as the server signed
-// them.
-func verifyManifestRoot(raw []byte, sig manifestSig) error {
-	root, ok := rootKeyByID(sig.RootKeyID)
-	if !ok {
-		return fmt.Errorf("%w: manifest signed by untrusted root %q", ErrManifestUnverified, sig.RootKeyID)
-	}
-
-	var generic map[string]any
-	if err := json.Unmarshal(raw, &generic); err != nil {
-		return fmt.Errorf("%w: %v", ErrManifestUnverified, err)
-	}
-	signed, err := canonicalJSON(map[string]any{
-		"issuedAt": generic["issuedAt"],
-		"keys":     generic["keys"],
-	})
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrManifestUnverified, err)
-	}
-
-	ok, err = verifyEd25519(root.Pub, signed, sig.Sig)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrManifestUnverified, err)
-	}
-	if !ok {
-		return fmt.Errorf("%w: root signature does not verify", ErrManifestUnverified)
-	}
-	return nil
-}
-
-// KeyByID returns the working key with the given keyid, if present.
-func (m *Manifest) KeyByID(keyid string) (Key, bool) {
+// SigningInput returns the RFC 8785 canonical bytes the root signs: the manifest
+// minus its own sig block, i.e. canonicalize({issuedAt, keys}). Both this
+// verifier and scripts/gen-signing-key compute the signature over these bytes,
+// so they cannot drift.
+func (m *Manifest) SigningInput() ([]byte, error) {
+	keys := make([]interface{}, 0, len(m.Keys))
 	for _, k := range m.Keys {
-		if k.KeyID == keyid {
-			return k, true
-		}
+		keys = append(keys, map[string]interface{}{
+			"keyid":     k.KeyID,
+			"alg":       k.Alg,
+			"pub":       k.Pub,
+			"validFrom": k.ValidFrom,
+			"validTo":   k.ValidTo,
+		})
 	}
-	return Key{}, false
+	return canonicalize(map[string]interface{}{
+		"issuedAt": m.IssuedAt,
+		"keys":     keys,
+	})
 }
 
-// ArtifactSignature is the signature envelope attached to an artifact record.
-type ArtifactSignature struct {
-	KeyID string
-	Alg   string
-	Sig   string
-}
-
-// VerifyArtifact verifies an artifact's signature against the manifest's
-// working keys. It performs the same three checks as the reference verifier:
-//  1. the signature's keyid is present in the manifest (else ErrKeyUnknown);
-//  2. the artifact's upload time falls within that key's validity window
-//     (else ErrKeyExpired);
-//  3. the Ed25519 signature verifies against the reconstructed canonical
-//     payload (else *ErrSignatureMismatch).
-//
-// Note (backfill): the registry signs backfilled historical artifacts with the
-// current working key but sets uploaded_at to the artifact's original
-// created_at, which can predate the key's validFrom. Such artifacts fail the
-// window check here and surface as ErrKeyExpired; under the default warn
-// enforcement that is a warning, not a hard failure. Selection is otherwise by
-// keyid, matching the reference verifier.
-func (m *Manifest) VerifyArtifact(p Payload, sig ArtifactSignature) error {
-	key, ok := m.KeyByID(sig.KeyID)
+// Verify checks the manifest's root signature against the pinned roots. It
+// returns nil only if sig.rootKeyid matches a pinned root and the Ed25519
+// signature verifies over SigningInput(); otherwise ErrManifestUnverified.
+func (m *Manifest) Verify(roots []Root) error {
+	root, ok := findRoot(roots, m.Sig.RootKeyID)
 	if !ok {
-		return fmt.Errorf("%w: keyid %q (run 'fglpkg update' or upgrade the CLI)", ErrKeyUnknown, sig.KeyID)
+		return fmt.Errorf("%w: unknown rootKeyid %q", ErrManifestUnverified, m.Sig.RootKeyID)
 	}
-	if err := checkWindow(p.UploadedAt, key); err != nil {
-		return err
-	}
-	verified, err := verifyEd25519(key.Pub, p.Canonical(), sig.Sig)
+	pub, err := decodeEd25519Pub(root.PubB64)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: bad pinned root key: %v", ErrManifestUnverified, err)
 	}
-	if !verified {
-		return &ErrSignatureMismatch{
-			Name: p.Name, Version: p.Version, Variant: p.Variant, KeyID: sig.KeyID,
+	sig, err := base64.StdEncoding.DecodeString(m.Sig.Sig)
+	if err != nil {
+		return fmt.Errorf("%w: bad signature encoding: %v", ErrManifestUnverified, err)
+	}
+	input, err := m.SigningInput()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrManifestUnverified, err)
+	}
+	if !ed25519.Verify(pub, input, sig) {
+		return ErrManifestUnverified
+	}
+	return nil
+}
+
+// SelectKey returns the working key with the given keyid whose validity window
+// covers at (inclusive). Callers pass the artifact's uploaded_at (Layer 1) or
+// the release time. Returns ErrKeyUnknown or ErrKeyExpired.
+//
+// Verify the manifest against the pinned root before trusting any key it names.
+func (m *Manifest) SelectKey(keyid string, at time.Time) (*Key, error) {
+	for i := range m.Keys {
+		if m.Keys[i].KeyID != keyid {
+			continue
+		}
+		k := &m.Keys[i]
+		from, err := time.Parse(time.RFC3339, k.ValidFrom)
+		if err != nil {
+			return nil, fmt.Errorf("signing: key %q has invalid validFrom: %w", keyid, err)
+		}
+		to, err := time.Parse(time.RFC3339, k.ValidTo)
+		if err != nil {
+			return nil, fmt.Errorf("signing: key %q has invalid validTo: %w", keyid, err)
+		}
+		if at.Before(from) || at.After(to) {
+			return nil, fmt.Errorf("%w: key %q valid %s..%s, artifact at %s",
+				ErrKeyExpired, keyid, k.ValidFrom, k.ValidTo, at.UTC().Format(time.RFC3339))
+		}
+		return k, nil
+	}
+	return nil, fmt.Errorf("%w: %q", ErrKeyUnknown, keyid)
+}
+
+// ValidKeys returns the working keys whose validity window covers at. Used where
+// no keyid accompanies the signature (the detached checksums.txt.sig release
+// path): the caller tries each returned key. Verify the manifest against the
+// pinned root before trusting these keys. Entries with unparseable windows are
+// skipped.
+func (m *Manifest) ValidKeys(at time.Time) []Key {
+	var out []Key
+	for _, k := range m.Keys {
+		from, err1 := time.Parse(time.RFC3339, k.ValidFrom)
+		to, err2 := time.Parse(time.RFC3339, k.ValidTo)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if !at.Before(from) && !at.After(to) {
+			out = append(out, k)
 		}
 	}
-	return nil
-}
-
-// checkWindow reports whether uploadedAt falls within [validFrom, validTo] of
-// key. uploadedAt may be an RFC 3339 string or the SQLite "YYYY-MM-DD HH:MM:SS"
-// form the registry stores; both are normalised to UTC before comparison,
-// mirroring the reference verifier.
-func checkWindow(uploadedAt string, key Key) error {
-	up, err := parseTimestamp(uploadedAt)
-	if err != nil {
-		return fmt.Errorf("%w: cannot parse upload time %q: %v", ErrKeyExpired, uploadedAt, err)
-	}
-	from, err := parseTimestamp(key.ValidFrom)
-	if err != nil {
-		return fmt.Errorf("%w: cannot parse validFrom %q: %v", ErrKeyExpired, key.ValidFrom, err)
-	}
-	to, err := parseTimestamp(key.ValidTo)
-	if err != nil {
-		return fmt.Errorf("%w: cannot parse validTo %q: %v", ErrKeyExpired, key.ValidTo, err)
-	}
-	if up.Before(from) || up.After(to) {
-		return fmt.Errorf("%w: uploaded %s, key %q valid [%s .. %s]",
-			ErrKeyExpired, uploadedAt, key.KeyID, key.ValidFrom, key.ValidTo)
-	}
-	return nil
-}
-
-// parseTimestamp accepts RFC 3339 timestamps and the SQLite
-// "YYYY-MM-DD HH:MM:SS" form (assumed UTC), returning a UTC time.
-func parseTimestamp(s string) (time.Time, error) {
-	s = strings.TrimSpace(s)
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UTC(), nil
-	}
-	// SQLite datetime('now') form: "2026-06-06 23:07:09" (UTC, no zone).
-	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
-		return t.UTC(), nil
-	}
-	return time.Time{}, fmt.Errorf("unrecognised timestamp format")
+	return out
 }

@@ -251,7 +251,7 @@ func (i *Installer) verifySignature(info *registry.PackageInfo, variant string) 
 	if err != nil {
 		return i.onSigningIssue(mode, fmt.Errorf("%s@%s: cannot load keys manifest: %w", info.Name, info.Version, err))
 	}
-	p := signing.Payload{
+	p := signing.ArtifactFields{
 		Name: info.Name, Version: info.Version, Variant: variant,
 		SHA256: info.Checksum, Size: info.Size,
 		UploadedAt: info.UploadedAt, Uploader: info.Uploader,
