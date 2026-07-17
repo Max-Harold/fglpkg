@@ -886,10 +886,10 @@ func (m *Manifest) validateNoSelfDependency() error {
 	if m.Name == "" {
 		return nil // name is validated separately; nothing to compare against
 	}
-	self := slug.Canonical(m.Name)
+	self := slugutil.Canonical(m.Name)
 	for _, scope := range []Scope{ScopeProd, ScopeDev, ScopeOptional} {
 		for dep := range m.bucket(scope).FGL {
-			if slug.Canonical(dep) == self {
+			if slugutil.Canonical(dep) == self {
 				return fmt.Errorf(
 					"package %q cannot depend on itself (found %q in %s dependencies)",
 					m.Name, dep, scope,
