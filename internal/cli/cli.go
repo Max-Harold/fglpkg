@@ -1758,6 +1758,35 @@ func stagePackage(stageDir string, m *manifest.Manifest) error {
 	return nil
 }
 
+// filesPatternMatch reports whether a manifest `files` pattern matches a source
+// file during the pack staging walk.
+//
+//   - A pattern WITHOUT "/" (e.g. "*.42m") matches the file's BASENAME at any
+//     depth under root — the historical behaviour, preserved byte-for-byte.
+//   - A pattern CONTAINING "/" (e.g. "tests/*.4gl", "com/**/*.42m") is
+//     path-scoped: it matches the file's path RELATIVE TO root, with "**"
+//     spanning directory levels and "*" confined to a single path segment. A
+//     leading "/" is accepted and anchors at root (same as no leading slash).
+//
+// A basename never contains "/", so every "/"-pattern matched nothing under the
+// old basename-only rule; giving them path semantics therefore assigns
+// behaviour only to previously dead patterns and cannot change any manifest
+// that works today (GIS-275). Note the reference point: `files` path-patterns
+// are relative to root (the BDL source base), whereas .fglpkgignore patterns
+// are relative to the project root — see docs/user-guide.md.
+func filesPatternMatch(pattern, base, relToRoot string, relToRootErr error) bool {
+	slashPattern := filepath.ToSlash(pattern)
+	if !strings.Contains(slashPattern, "/") {
+		matched, _ := filepath.Match(pattern, base)
+		return matched
+	}
+	if relToRootErr != nil {
+		return false
+	}
+	anchored := strings.TrimPrefix(slashPattern, "/")
+	return matchGlob(anchored, filepath.ToSlash(relToRoot))
+}
+
 // stageBDLFiles walks the BDL source tree (m.Root, default "."), applying the
 // manifest's `files` patterns (defaulting to *.42m/*.42f/*.sch) and declared
 // `bin` scripts, and stages each match at its path rebased under importRoot.
@@ -1783,9 +1812,11 @@ func stageBDLFiles(stageDir string, m *manifest.Manifest, ignore *ignoreSet, sta
 			return nil
 		}
 		base := filepath.Base(path)
+		// relToRoot drives path-scoped `files` patterns (those containing "/");
+		// bare patterns still match on the basename alone (GIS-275).
+		relToRoot, relToRootErr := filepath.Rel(root, path)
 		for _, pattern := range patterns {
-			matched, _ := filepath.Match(pattern, base)
-			if !matched {
+			if !filesPatternMatch(pattern, base, relToRoot, relToRootErr) {
 				continue
 			}
 			relPath, relErr := filepath.Rel(".", path)
