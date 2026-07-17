@@ -448,6 +448,15 @@ By default, fglpkg collects files matching `*.42m`, `*.42f`, and `*.sch`. To cus
 }
 ```
 
+Patterns come in two forms:
+
+- **No slash** (e.g. `*.42m`) — matched against each file's **basename**, at any depth under `root`. This is the common case.
+- **Contains a slash** (e.g. `tests/*.4gl`, `com/**/*.42m`) — **path-scoped**, matched against the file's path **relative to `root`**. `*` matches within a single directory segment; `**` spans any number of segments. A leading `/` is allowed and means the same thing (anchored at `root`).
+
+So with `"root": "com/fourjs/ai/fgl_ai_sdk"`, a `"files": ["*.42m", "tests/*.4gl"]` ships every compiled module plus only the `.4gl` sources under `tests/` — the library `.4gl` at the package root is left out, with no `.fglpkgignore` needed.
+
+> **Note:** `files` path-patterns are relative to `root` (your BDL source base). This differs from [`.fglpkgignore`](#excluding-files-with-fglpkgignore), whose patterns are relative to the **project root**. Keep that in mind when the same file needs to line up across both.
+
 ### Excluding Files with `.fglpkgignore`
 
 Place a `.fglpkgignore` file in the project root to subtract files from the inclusion set computed by `files`/`docs`. The syntax is a small subset of `.gitignore`:
