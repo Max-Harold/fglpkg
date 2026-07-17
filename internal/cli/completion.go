@@ -36,6 +36,7 @@ var completionFlags = []string{
 	"--output", "-o",
 	"--production",
 	"--no-manifest-fallback",
+	"--no-verify-signature",
 	"--severity=",
 	"--offline",
 	"--pretty",

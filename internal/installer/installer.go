@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/4js-mikefolcher/fglpkg/internal/checksum"
 	"github.com/4js-mikefolcher/fglpkg/internal/genero"
@@ -19,6 +20,7 @@ import (
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/resolver"
+	"github.com/4js-mikefolcher/fglpkg/internal/signing"
 )
 
 // InstalledPackage is a summary of an installed BDL package.
@@ -49,6 +51,14 @@ type Installer struct {
 	// repositories (including the built-in "gi"). Used to reject a lock file
 	// that references a repository since removed from the config (spec §9).
 	configuredRegistries []string
+
+	// ── Layer 1 signature verification (opt-in via WithSigning) ──
+	signingEnforce  string // "require" | "warn" | "off"; "" == off
+	keysHome        string // where the keys manifest is cached (usually the global ~/.fglpkg)
+	registryBase    string // consumer registry base URL for fetching the keys manifest
+	keysOnce        sync.Once
+	keysManifest    *signing.Manifest
+	keysManifestErr error
 }
 
 // RepoAuth maps a repository URL prefix to the HTTP headers that authenticate
@@ -199,6 +209,79 @@ func sameOrigin(rawURL, originURL string) bool {
 	return strings.EqualFold(u.Scheme, o.Scheme) && strings.EqualFold(u.Host, o.Host)
 }
 
+// WithSigning enables Layer 1 signature verification on install.
+//
+//   - enforce: "require" aborts on a bad/missing signature, "warn" logs and
+//     continues, "off" (or "") disables verification entirely.
+//   - keysHome: directory the root-verified keys manifest is cached in
+//     (typically the global ~/.fglpkg, even for a local install).
+//   - registryBase: consumer registry base URL the manifest is fetched from.
+func (i *Installer) WithSigning(enforce, keysHome, registryBase string) *Installer {
+	i.signingEnforce = enforce
+	i.keysHome = keysHome
+	i.registryBase = registryBase
+	return i
+}
+
+// keysManifestFor lazily loads (once) the root-verified keys manifest.
+func (i *Installer) keysManifestFor() (*signing.Manifest, error) {
+	i.keysOnce.Do(func() {
+		home := i.keysHome
+		if home == "" {
+			home = i.home
+		}
+		i.keysManifest, i.keysManifestErr = signing.LoadManifest(home, i.registryBase)
+	})
+	return i.keysManifest, i.keysManifestErr
+}
+
+// verifySignature checks info's Layer 1 registry signature, honouring the
+// configured enforce mode. variant is the artifact variant that was signed
+// (e.g. "genero6" / "webcomponent"); it may differ from info.Variant when the
+// record was reconstructed from the lock file.
+func (i *Installer) verifySignature(info *registry.PackageInfo, variant string) error {
+	mode := i.signingEnforce
+	if mode == "" || mode == "off" {
+		return nil
+	}
+	if info.Signature == nil {
+		return i.onSigningIssue(mode, fmt.Errorf("%s@%s: %w", info.Name, info.Version, signing.ErrUnsigned))
+	}
+	m, err := i.keysManifestFor()
+	if err != nil {
+		return i.onSigningIssue(mode, fmt.Errorf("%s@%s: cannot load keys manifest: %w", info.Name, info.Version, err))
+	}
+	p := signing.ArtifactFields{
+		Name: info.Name, Version: info.Version, Variant: variant,
+		SHA256: info.Checksum, Size: info.Size,
+		UploadedAt: info.UploadedAt, Uploader: info.Uploader,
+	}
+	sig := signing.ArtifactSignature{KeyID: info.Signature.KeyID, Alg: info.Signature.Alg, Sig: info.Signature.Sig}
+	if err := m.VerifyArtifact(p, sig); err != nil {
+		return i.onSigningIssue(mode, err)
+	}
+	return nil
+}
+
+// onSigningIssue applies the enforce policy: "require" surfaces the error;
+// "warn" logs it and continues.
+func (i *Installer) onSigningIssue(mode string, err error) error {
+	if mode == "require" {
+		return err
+	}
+	printSync("  warning: signature check failed: %v\n", err)
+	return nil
+}
+
+// lockSignature reconstructs a signature envelope from lock-file fields,
+// returning nil when the locked package carries no signature.
+func lockSignature(keyid, sig string) *registry.Signature {
+	if keyid == "" && sig == "" {
+		return nil
+	}
+	return &registry.Signature{KeyID: keyid, Alg: "ed25519", Sig: sig}
+}
+
 // Options controls optional install behaviour.
 type Options struct {
 	// Production skips dev-scoped packages and JARs. Optional entries are
@@ -328,8 +411,21 @@ func (i *Installer) installFromLock(lf *lockfile.LockFile, root *manifest.Manife
 			Version:     pkg.Version,
 			DownloadURL: pkg.DownloadURL,
 			Checksum:    pkg.Checksum,
+			Size:        pkg.Size,
+			UploadedAt:  pkg.UploadedAt,
+			Uploader:    pkg.Uploader,
+			Signature:   lockSignature(pkg.SignatureKeyID, pkg.Signature),
 		}
 		if err := i.Install(info); err != nil {
+			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
+		}
+		// The signed artifact variant is "genero<major>" (or the record's
+		// own variant when the lock predates that field).
+		variant := pkg.GeneroMajor
+		if variant != "" {
+			variant = "genero" + variant
+		}
+		if err := i.verifySignature(info, variant); err != nil {
 			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
 		}
 		printSync("  ✓ %s@%s\n", pkg.Name, pkg.Version)
@@ -350,8 +446,15 @@ func (i *Installer) installFromLock(lf *lockfile.LockFile, root *manifest.Manife
 			DownloadURL: wc.DownloadURL,
 			Checksum:    wc.Checksum,
 			Variant:     "webcomponent",
+			Size:        wc.Size,
+			UploadedAt:  wc.UploadedAt,
+			Uploader:    wc.Uploader,
+			Signature:   lockSignature(wc.SignatureKeyID, wc.Signature),
 		}
 		if err := i.Install(info); err != nil {
+			return fmt.Errorf("failed to install webcomponent %s: %w", wc.Name, err)
+		}
+		if err := i.verifySignature(info, "webcomponent"); err != nil {
 			return fmt.Errorf("failed to install webcomponent %s: %w", wc.Name, err)
 		}
 		printSync("  ✓ %s@%s (webcomponent)\n", wc.Name, wc.Version)
@@ -443,12 +546,19 @@ func (i *Installer) installFromPlan(plan *resolver.Plan, root *manifest.Manifest
 			DownloadURL: pkg.DownloadURL,
 			Checksum:    pkg.Checksum,
 			Variant:     pkg.Variant,
+			Size:        pkg.Size,
+			UploadedAt:  pkg.UploadedAt,
+			Uploader:    pkg.Uploader,
+			Signature:   pkg.Signature,
 		}
 		if err := i.Install(info); err != nil {
 			if pkg.Scope == manifest.ScopeOptional {
 				printSync("  warning: skipping optional package %s: %v\n", pkg.Name, err)
 				return nil
 			}
+			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
+		}
+		if err := i.verifySignature(info, pkg.Variant); err != nil {
 			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
 		}
 		// Required-by hint joins the completion line so it doesn't
