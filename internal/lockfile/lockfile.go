@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/4js-mikefolcher/fglpkg/internal/config"
+	"github.com/4js-mikefolcher/fglpkg/internal/jsonutil"
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
 	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/resolver"
@@ -323,7 +324,9 @@ func (lf *LockFile) AddManifestJARs(deps []manifest.JavaDependency) bool {
 
 // Save writes the lock file as formatted JSON to dir/fglpkg.lock.
 func (lf *LockFile) Save(dir string) error {
-	data, err := json.MarshalIndent(lf, "", "  ")
+	// jsonutil (no HTML escaping) so a requiredBy entry like "<root>" keeps its
+	// literal angle brackets instead of Unicode escapes (GIS-280).
+	data, err := jsonutil.MarshalIndent(lf, "  ")
 	if err != nil {
 		return fmt.Errorf("cannot serialise lock file: %w", err)
 	}

@@ -904,3 +904,66 @@ func TestValidateForPublishDelegatesToValidate(t *testing.T) {
 		t.Errorf("err = %q, want one mentioning version", err.Error())
 	}
 }
+
+// ─── GIS-280: canonical dependency keys + no HTML escaping ───────────────────
+
+// TestAddFGLDependencyDedupesByCanonicalSlug: installing a package whose name
+// canonicalizes to an already-declared dependency must not leave a duplicate
+// entry ("fgl_ai_sdk_2" + "fgl-ai-sdk-2"); the canonical slug wins (choice A).
+func TestAddFGLDependencyDedupesByCanonicalSlug(t *testing.T) {
+	m := manifest.New("consumer", "1.0.0", "", "")
+	m.Dependencies.FGL = map[string]string{"fgl_ai_sdk_2": "1.0.0"} // the user's spelling
+
+	// install resolves the canonical slug and adds it.
+	m.AddFGLDependencyScoped("fgl-ai-sdk-2", "1.0.0", manifest.ScopeProd)
+
+	fgl := m.Dependencies.FGL
+	if len(fgl) != 1 {
+		t.Fatalf("expected exactly one fgl dependency, got %d: %v", len(fgl), fgl)
+	}
+	if _, ok := fgl["fgl-ai-sdk-2"]; !ok {
+		t.Errorf("expected canonical key \"fgl-ai-sdk-2\", got %v", fgl)
+	}
+	if _, ok := fgl["fgl_ai_sdk_2"]; ok {
+		t.Errorf("non-canonical variant \"fgl_ai_sdk_2\" should have been replaced, got %v", fgl)
+	}
+}
+
+// TestRemoveFGLDependencyMatchesCanonicalSlug: a dependency stored under its
+// canonical slug is still removed when the user types a separator variant.
+func TestRemoveFGLDependencyMatchesCanonicalSlug(t *testing.T) {
+	m := manifest.New("consumer", "1.0.0", "", "")
+	m.Dependencies.FGL = map[string]string{"fgl-ai-sdk-2": "1.0.0"}
+
+	if scope := m.RemoveFGLDependency("fgl_ai_sdk_2"); scope != manifest.ScopeProd {
+		t.Fatalf("RemoveFGLDependency(variant) = %q, want %q", scope, manifest.ScopeProd)
+	}
+	if len(m.Dependencies.FGL) != 0 {
+		t.Errorf("dependency not removed: %v", m.Dependencies.FGL)
+	}
+}
+
+// TestSaveDoesNotHTMLEscape: fglpkg.json must keep the literal '>' in a genero
+// constraint. If Go's default HTML-escaping were in effect the '>' would be
+// written as a numeric Unicode escape, so the literal ">=6.0.0" would NOT
+// appear — the positive check alone distinguishes the two (GIS-280).
+func TestSaveDoesNotHTMLEscape(t *testing.T) {
+	dir := t.TempDir()
+	m := manifest.New("consumer", "1.0.0", "", "")
+	m.GeneroConstraint = ">=6.0.0"
+	m.Dependencies.FGL = map[string]string{"dep": ">=1.0.0"}
+	if err := m.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, manifest.Filename))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	got := string(data)
+	if !containsHelper(got, ">=6.0.0") {
+		t.Errorf("fglpkg.json is HTML-escaping the genero constraint; want literal >=6.0.0:\n%s", got)
+	}
+	if !containsHelper(got, ">=1.0.0") {
+		t.Errorf("fglpkg.json is HTML-escaping the dependency constraint; want literal >=1.0.0:\n%s", got)
+	}
+}

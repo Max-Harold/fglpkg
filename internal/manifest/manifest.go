@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/4js-mikefolcher/fglpkg/internal/config"
+	"github.com/4js-mikefolcher/fglpkg/internal/jsonutil"
 	"github.com/4js-mikefolcher/fglpkg/internal/semver"
 	slugutil "github.com/4js-mikefolcher/fglpkg/internal/slug"
 )
@@ -284,7 +285,9 @@ func (d Dependencies) MarshalJSON() ([]byte, error) {
 	if len(d.Java) > 0 {
 		out["java"] = d.Java
 	}
-	return json.Marshal(out)
+	// No-escape: a dep version constraint like ">=1.0.0" must not become a
+	// Unicode escape (GIS-280). Re-escaped by the outer boundaries otherwise.
+	return jsonutil.Marshal(out)
 }
 
 // UnmarshalJSON rejects unknown lifecycle event names with a helpful
@@ -489,7 +492,10 @@ func LoadOrNew(dir string) (*Manifest, error) {
 
 // Save writes the manifest as formatted JSON to dir/fglpkg.json.
 func (m *Manifest) Save(dir string) error {
-	data, err := json.MarshalIndent(m, "", "  ")
+	// jsonutil (no HTML escaping) so a genero constraint like ">=6.0.0" keeps
+	// its literal '>' rather than a numeric Unicode escape in the consumer's
+	// fglpkg.json (GIS-280).
+	data, err := jsonutil.MarshalIndent(m, "  ")
 	if err != nil {
 		return err
 	}
@@ -505,7 +511,10 @@ func (m *Manifest) Save(dir string) error {
 // original (struct-defined) key order.
 func (m *Manifest) MarshalJSON() ([]byte, error) {
 	type alias Manifest
-	buf, err := json.Marshal((*alias)(m))
+	// No-escape marshal so field values keep their literal '<'/'>'/'&'; Go
+	// re-escapes at every boundary, so this must match Save + Dependencies
+	// (GIS-280).
+	buf, err := jsonutil.Marshal((*alias)(m))
 	if err != nil {
 		return nil, err
 	}
@@ -602,20 +611,29 @@ func (m *Manifest) AddFGLDependency(name, version string) {
 // given scope. Any existing declaration in a different scope is removed, so
 // a given name appears in exactly one bucket.
 func (m *Manifest) AddFGLDependencyScoped(name, version string, scope Scope) {
+	canon := slugutil.Canonical(name)
+	// Remove any existing declaration of this package — matched by canonical
+	// slug, so a separator/case variant (e.g. "fgl_ai_sdk_2" vs "fgl-ai-sdk-2")
+	// is replaced rather than left as a duplicate (GIS-280) — from every scope,
+	// so the package lands in exactly one bucket keyed by its canonical slug.
 	for _, s := range []Scope{ScopeProd, ScopeDev, ScopeOptional} {
-		if s == scope {
-			continue
+		b := m.bucket(s)
+		for k := range b.FGL {
+			if slugutil.Canonical(k) == canon {
+				delete(b.FGL, k)
+				delete(b.FGLPins, k)
+			}
 		}
-		delete(m.bucket(s).FGL, name)
-		delete(m.bucket(s).FGLPins, name)
 	}
 	b := m.bucket(scope)
 	if b.FGL == nil {
 		b.FGL = map[string]string{}
 	}
-	b.FGL[name] = version
+	// Choice A: store under the canonical slug — the package's identity per
+	// GIS-271 — regardless of how the caller spelled the name.
+	b.FGL[canon] = version
 	// A plain add carries no registry pin; drop any stale one.
-	delete(b.FGLPins, name)
+	delete(b.FGLPins, canon)
 }
 
 // AddFGLDependencyPinned adds or updates a BDL package dependency pinned to a
@@ -631,16 +649,29 @@ func (m *Manifest) AddFGLDependencyPinned(name, version, registry string, scope 
 	if b.FGLPins == nil {
 		b.FGLPins = map[string]string{}
 	}
-	b.FGLPins[name] = registry
+	// Key the pin by the canonical slug so it matches the FGL entry stored by
+	// AddFGLDependencyScoped (choice A).
+	b.FGLPins[slugutil.Canonical(name)] = registry
 }
 
 // RemoveFGLDependency removes a BDL package dependency from whichever scope
 // it lives in. Returns the scope it was removed from, or "" if not present.
 func (m *Manifest) RemoveFGLDependency(name string) Scope {
+	// Match by canonical slug so a package added under its slug ("fgl-ai-sdk-2")
+	// is still removed when the user types a variant ("fgl_ai_sdk_2") — and
+	// vice versa for legacy non-canonical keys (GIS-280 / GIS-271).
+	canon := slugutil.Canonical(name)
 	for _, s := range []Scope{ScopeProd, ScopeDev, ScopeOptional} {
-		if _, ok := m.bucket(s).FGL[name]; ok {
-			delete(m.bucket(s).FGL, name)
-			delete(m.bucket(s).FGLPins, name)
+		b := m.bucket(s)
+		found := false
+		for k := range b.FGL {
+			if slugutil.Canonical(k) == canon {
+				delete(b.FGL, k)
+				delete(b.FGLPins, k)
+				found = true
+			}
+		}
+		if found {
 			return s
 		}
 	}
@@ -650,9 +681,13 @@ func (m *Manifest) RemoveFGLDependency(name string) Scope {
 // FindFGLDependency returns the version constraint and scope for the named
 // package, or "", "" if it is not declared in any scope.
 func (m *Manifest) FindFGLDependency(name string) (constraint string, scope Scope) {
+	// Canonical-slug match, mirroring AddFGLDependencyScoped's storage key.
+	canon := slugutil.Canonical(name)
 	for _, s := range []Scope{ScopeProd, ScopeDev, ScopeOptional} {
-		if v, ok := m.bucket(s).FGL[name]; ok {
-			return v, s
+		for k, v := range m.bucket(s).FGL {
+			if slugutil.Canonical(k) == canon {
+				return v, s
+			}
 		}
 	}
 	return "", ""
