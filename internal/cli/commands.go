@@ -63,8 +63,15 @@ Prompts for name, version, description, and author, then writes fglpkg.json.
   --no-manifest-fallback   Do not install Java dependencies a package's bundled
                            manifest declares but its registry record omits; the
                            divergence is still reported
+  --no-verify-signature    Skip Layer 1 registry signature verification for this
+                           install (discouraged; overrides signing.enforce)
 
 With no package arguments, installs everything declared in fglpkg.json.
+
+Installed packages are verified against the registry's Ed25519 signature by
+default (mode "warn": a bad or missing signature warns but does not block).
+Set signing.enforce to "require" in ~/.fglpkg/config.json, or FGLPKG_SIGNING=
+require|warn|off, to change this.
 With one or more <package>[@<version>] arguments, resolves and adds them.
 Without --local/--global, the target is auto-detected: local when a
 .fglpkg/ directory or fglpkg.json exists in the current directory.
@@ -164,8 +171,8 @@ Java dependencies are not checked (they use exact version pins).
 	{
 		Name:       "audit",
 		Summary:    "Check installed Java JARs for known vulnerabilities",
-		ListDetail: "\n(--json, --severity=<level>, --production)",
-		Usage:      "fglpkg audit [flags]",
+		ListDetail: "\n(--json, --severity=<level>, --production; or `audit signatures`)",
+		Usage:      "fglpkg audit [flags]   |   fglpkg audit signatures",
 		Long: `FLAGS:
   --json                          Emit a JSON report on stdout
   --severity=<low|medium|high|critical>
@@ -173,9 +180,15 @@ Java dependencies are not checked (they use exact version pins).
   --production, --prod            Skip dev-scoped JARs
   --offline                       Reserved for a future cached-advisory mode (errors today)
 
+SUBCOMMANDS:
+  signatures                      Re-verify the Layer 1 registry signature of
+                                  every package in the lock file against the
+                                  current keys manifest. Exits non-zero if any
+                                  package is unsigned or fails verification.
+
 EXIT CODES:
-  0  no findings at or above --severity
-  1  one or more findings at or above --severity
+  0  no findings at or above --severity (or all signatures valid)
+  1  one or more findings at or above --severity (or a signature failed)
   2  audit itself failed (missing lockfile, network error, etc.)
 
 NOTES:
@@ -419,6 +432,24 @@ specific doc.
 
 With no arguments, prints the fglpkg tool version. With a bump kind
 (patch|minor|major|prerelease) or an explicit semver, updates fglpkg.json.
+`,
+	},
+	{
+		Name:    "self-update",
+		Aliases: []string{"upgrade"},
+		Summary: "Update fglpkg to the latest release",
+		Usage:   "fglpkg self-update [--check] [--yes] [--force]",
+		Long: `FLAGS:
+  --check                  Report whether an update is available and exit;
+                           never downloads or writes
+  --yes, -y                Skip the confirmation prompt (for scripts)
+  --force                  Re-install even if already on the latest version
+
+Downloads the latest stable release for this OS/arch, verifies its Ed25519
+release signature (chained to fglpkg's pinned root) and its SHA-256 checksum,
+then atomically replaces the running executable. Latest-stable only — no
+version pinning, pre-releases, or downgrade. Refuses on 'dev' builds and on
+installs managed by a package manager such as Homebrew.
 `,
 	},
 	{

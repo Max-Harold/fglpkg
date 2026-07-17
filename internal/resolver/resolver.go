@@ -57,6 +57,14 @@ type ResolvedPackage struct {
 	// PackageInfo.Source; empty means the default GI registry. Recorded in
 	// the lockfile as the anti-dependency-confusion pin.
 	Source string
+
+	// ── Layer 1 signing material (parallel to Checksum) ──
+	// Carried from the registry record so the installer can reconstruct the
+	// canonical signed payload and verify the registry signature.
+	Size       int64
+	UploadedAt string
+	Uploader   string
+	Signature  *registry.Signature
 }
 
 // IsWebcomponent reports whether this resolved entry is a webcomponent
@@ -674,6 +682,10 @@ func (s *state) buildPlan() *Plan {
 			RequiredBy:  requiredBy,
 			Scope:       entry.scope,
 			Source:      entry.info.Source,
+			Size:        entry.info.Size,
+			UploadedAt:  entry.info.UploadedAt,
+			Uploader:    entry.info.Uploader,
+			Signature:   entry.info.Signature,
 		})
 	}
 	// Restore discovery order. Each resolved entry carries a unique,

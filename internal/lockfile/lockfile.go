@@ -27,6 +27,7 @@ import (
 
 	"github.com/4js-mikefolcher/fglpkg/internal/config"
 	"github.com/4js-mikefolcher/fglpkg/internal/manifest"
+	"github.com/4js-mikefolcher/fglpkg/internal/registry"
 	"github.com/4js-mikefolcher/fglpkg/internal/resolver"
 )
 
@@ -114,6 +115,17 @@ type LockedPackage struct {
 	// package is re-fetched from this repository and can never be silently
 	// re-routed. See specs/artifactory-secondary-repository.md §9.
 	Registry string `json:"registry,omitempty"`
+
+	// ── Layer 1 signing material ──
+	// Size/UploadedAt/Uploader are the remaining inputs (beyond name,
+	// version, variant, and Checksum) needed to reconstruct the canonical
+	// signed payload for offline re-verification. Signature/SignatureKeyID
+	// are the Ed25519 envelope. All empty for unsigned packages.
+	Size           int64  `json:"size,omitempty"`
+	UploadedAt     string `json:"uploadedAt,omitempty"`
+	Uploader       string `json:"uploader,omitempty"`
+	Signature      string `json:"signature,omitempty"` // base64 raw 64-byte Ed25519 signature
+	SignatureKeyID string `json:"signatureKeyid,omitempty"`
 }
 
 // LockedWebcomponent is the fully-pinned record of one webcomponent package.
@@ -146,6 +158,13 @@ type LockedWebcomponent struct {
 	// Registry is the logical repository this package resolved from. Empty
 	// means the default GI registry. See LockedPackage.Registry.
 	Registry string `json:"registry,omitempty"`
+
+	// ── Layer 1 signing material (see LockedPackage) ──
+	Size           int64  `json:"size,omitempty"`
+	UploadedAt     string `json:"uploadedAt,omitempty"`
+	Uploader       string `json:"uploader,omitempty"`
+	Signature      string `json:"signature,omitempty"`
+	SignatureKeyID string `json:"signatureKeyid,omitempty"`
 }
 
 // LockedJAR is the fully-pinned record of one Java JAR.
@@ -189,28 +208,40 @@ func FromPlan(plan *resolver.Plan, root *manifest.Manifest) *LockFile {
 		copy(requiredBy, p.RequiredBy)
 		sort.Strings(requiredBy)
 
+		keyid, sig := sigFields(p.Signature)
+
 		if p.IsWebcomponent() {
 			wcs = append(wcs, LockedWebcomponent{
-				Name:        p.Name,
-				Version:     p.Version.String(),
-				DownloadURL: p.DownloadURL,
-				Checksum:    p.Checksum,
-				RequiredBy:  requiredBy,
-				Scope:       scopeLockString(p.Scope),
-				Registry:    normalizeSource(p.Source),
+				Name:           p.Name,
+				Version:        p.Version.String(),
+				DownloadURL:    p.DownloadURL,
+				Checksum:       p.Checksum,
+				RequiredBy:     requiredBy,
+				Scope:          scopeLockString(p.Scope),
+				Registry:       normalizeSource(p.Source),
+				Size:           p.Size,
+				UploadedAt:     p.UploadedAt,
+				Uploader:       p.Uploader,
+				Signature:      sig,
+				SignatureKeyID: keyid,
 			})
 			continue
 		}
 
 		pkgs = append(pkgs, LockedPackage{
-			Name:        p.Name,
-			Version:     p.Version.String(),
-			DownloadURL: p.DownloadURL,
-			Checksum:    p.Checksum,
-			GeneroMajor: plan.GeneroVersion.MajorString(),
-			RequiredBy:  requiredBy,
-			Scope:       scopeLockString(p.Scope),
-			Registry:    normalizeSource(p.Source),
+			Name:           p.Name,
+			Version:        p.Version.String(),
+			DownloadURL:    p.DownloadURL,
+			Checksum:       p.Checksum,
+			GeneroMajor:    plan.GeneroVersion.MajorString(),
+			RequiredBy:     requiredBy,
+			Scope:          scopeLockString(p.Scope),
+			Registry:       normalizeSource(p.Source),
+			Size:           p.Size,
+			UploadedAt:     p.UploadedAt,
+			Uploader:       p.Uploader,
+			Signature:      sig,
+			SignatureKeyID: keyid,
 		})
 	}
 	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].Name < pkgs[j].Name })
@@ -378,8 +409,8 @@ func (e *GeneroMismatchError) Error() string {
 
 // ManifestMismatchError describes a stale lock file (manifest changed).
 type ManifestMismatchError struct {
-	Field    string
-	InLock   string
+	Field      string
+	InLock     string
 	InManifest string
 }
 
@@ -505,6 +536,15 @@ func generoMajor(v string) string {
 		}
 	}
 	return v
+}
+
+// sigFields extracts the keyid and base64 signature from a resolved
+// signature envelope, returning empty strings when the package is unsigned.
+func sigFields(s *registry.Signature) (keyid, sig string) {
+	if s == nil {
+		return "", ""
+	}
+	return s.KeyID, s.Sig
 }
 
 // scopeLockString converts a manifest.Scope into the string value stored in
