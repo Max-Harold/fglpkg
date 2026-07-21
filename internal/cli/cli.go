@@ -1271,10 +1271,8 @@ func buildSourceIndex(ignore *ignoreSet) map[string][]string {
 			}
 			// Prune whole ignored subtrees (e.g. a "test/" rule) so their
 			// sources never enter the index.
-			if rel, relErr := filepath.Rel(".", p); relErr == nil && rel != "." {
-				if ignore.shouldExclude(filepath.ToSlash(rel), true) {
-					return filepath.SkipDir
-				}
+			if dirShouldBeSkipped(ignore, p) {
+				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -1960,6 +1958,9 @@ func stageBDLFiles(stageDir string, m *manifest.Manifest, ignore *ignoreSet, sta
 			if isPackArtifactDir(path) {
 				return filepath.SkipDir
 			}
+			if dirShouldBeSkipped(ignore, path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		base := filepath.Base(path)
@@ -2040,6 +2041,9 @@ func stageWebcomponentFiles(stageDir string, m *manifest.Manifest, ignore *ignor
 				return err
 			}
 			if info.IsDir() {
+				if dirShouldBeSkipped(ignore, path) {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			relPath, relErr := filepath.Rel(".", path)
@@ -2077,6 +2081,9 @@ func stageDocFiles(stageDir string, m *manifest.Manifest, ignore *ignoreSet, sta
 		}
 		if info.IsDir() {
 			if isPackArtifactDir(path) {
+				return filepath.SkipDir
+			}
+			if dirShouldBeSkipped(ignore, path) {
 				return filepath.SkipDir
 			}
 			return nil
