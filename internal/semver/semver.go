@@ -329,7 +329,18 @@ func parseToken(tok string) ([]predicate, error) {
 		return parseXRange(tok)
 	}
 
-	// Bare version → exact match (but allow partial like "1.2" → "1.2.0")
+	// Bare version. A full MAJOR.MINOR.PATCH is an exact pin; a partial widens
+	// to the matching range, mirroring npm ("1.2" like "1.2.x", "1" like "1.x").
+	// Use the operator form (e.g. "=1.2") to force an exact partial pin.
+	base, _ := splitPreRelease(tok)
+	switch strings.Count(base, ".") {
+	case 0: // "1"   → >=1.0.0 <2.0.0
+		return parseXRange(base + ".x")
+	case 1: // "1.2" → >=1.2.0 <1.3.0
+		return parseXRange(base + ".x")
+	}
+
+	// Full version (three components) → exact match.
 	v, err := parsePartial(tok)
 	if err != nil {
 		return nil, fmt.Errorf("invalid version %q: %w", tok, err)

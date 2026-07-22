@@ -428,6 +428,68 @@ func TestLoadAcceptsNestedFGLDependencies(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsUnknownJavaField is the regression for issue #24 M2: java
+// (sidecar) dependencies must be parsed as strictly as the rest of the manifest,
+// so a typo'd/unknown key inside a java entry is rejected rather than silently
+// dropped.
+func TestLoadRejectsUnknownJavaField(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+		"name": "x",
+		"version": "1.0.0",
+		"dependencies": {
+			"java": [
+				{ "groupId": "com.acme", "artifactId": "widgets", "version": "1.0.0", "scope": "compile" }
+			]
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := manifest.Load(dir)
+	if err == nil {
+		t.Fatal("expected error for unknown java field, got nil")
+	}
+	if !contains(err.Error(), "scope") {
+		t.Errorf("error should name the offending field, got: %v", err)
+	}
+}
+
+// TestLoadAcceptsJavaDependency confirms the M2 strictness does not reject a
+// well-formed java entry using the known optional fields.
+func TestLoadAcceptsJavaDependency(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+		"name": "x",
+		"version": "1.0.0",
+		"dependencies": {
+			"java": [
+				{
+					"groupId": "com.acme",
+					"artifactId": "widgets",
+					"version": "1.0.0",
+					"checksum": "abc123",
+					"jar": "widgets.jar",
+					"url": "https://example.com/widgets.jar"
+				}
+			]
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m, err := manifest.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(m.Dependencies.Java) != 1 {
+		t.Fatalf("expected 1 java dep, got %d", len(m.Dependencies.Java))
+	}
+	if got := m.Dependencies.Java[0]; got.ArtifactID != "widgets" || got.JarFile != "widgets.jar" || got.URL == "" {
+		t.Errorf("java dep not loaded as expected: %+v", got)
+	}
+}
+
 // TestLoadRejectsEmptyFGLVersion is the regression for issue #24 C6: a null or
 // empty-string version in the plain-string form must be rejected at load,
 // matching the object form. Otherwise it later parses as "match any" and
