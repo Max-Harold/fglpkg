@@ -481,13 +481,15 @@ func rangePredsPre(loMaj, loMin, loPatch uint64, loPre string, hiMaj, hiMin, hiP
 func parsePartial(s string) (Version, error) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
 
-	// Strip build / prerelease for partial parsing
+	// Strip build metadata first, then prerelease — same order as Parse. Doing
+	// prerelease first would leave a trailing "+build" attached to the
+	// prerelease token (e.g. "1.2.3-beta+build" → PreRelease "beta+build").
 	pre := ""
-	if idx := strings.IndexByte(s, '-'); idx >= 0 {
-		pre = s[idx+1:]
+	if idx := strings.IndexByte(s, '+'); idx >= 0 {
 		s = s[:idx]
 	}
-	if idx := strings.IndexByte(s, '+'); idx >= 0 {
+	if idx := strings.IndexByte(s, '-'); idx >= 0 {
+		pre = s[idx+1:]
 		s = s[:idx]
 	}
 

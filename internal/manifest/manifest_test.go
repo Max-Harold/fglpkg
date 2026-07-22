@@ -428,6 +428,47 @@ func TestLoadAcceptsNestedFGLDependencies(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsEmptyFGLVersion is the regression for issue #24 C6: a null or
+// empty-string version in the plain-string form must be rejected at load,
+// matching the object form. Otherwise it later parses as "match any" and
+// silently resolves to the latest published version.
+func TestLoadRejectsEmptyFGLVersion(t *testing.T) {
+	cases := map[string]string{
+		"null":         `{"name":"x","version":"1.0.0","dependencies":{"fgl":{"acme":null}}}`,
+		"empty string": `{"name":"x","version":"1.0.0","dependencies":{"fgl":{"acme":""}}}`,
+		"whitespace":   `{"name":"x","version":"1.0.0","dependencies":{"fgl":{"acme":"  "}}}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, err := manifest.Load(dir)
+			if err == nil {
+				t.Fatal("expected error for empty/null fgl version, got nil")
+			}
+			if !contains(err.Error(), "dependencies.fgl.acme") {
+				t.Errorf("error should name the offending key, got: %v", err)
+			}
+		})
+	}
+
+	// A valid version still loads.
+	dir := t.TempDir()
+	raw := `{"name":"x","version":"1.0.0","dependencies":{"fgl":{"acme":"^1.0.0"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "fglpkg.json"), []byte(raw), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m, err := manifest.Load(dir)
+	if err != nil {
+		t.Fatalf("Load valid: %v", err)
+	}
+	if m.Dependencies.FGL["acme"] != "^1.0.0" {
+		t.Errorf("expected acme ^1.0.0, got %v", m.Dependencies.FGL)
+	}
+}
+
 // ─── Scopes: dev + optional ──────────────────────────────────────────────────
 
 func TestScopedDependenciesRoundTrip(t *testing.T) {
