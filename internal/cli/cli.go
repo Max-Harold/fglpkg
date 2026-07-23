@@ -1591,9 +1591,11 @@ func cmdPublish(args []string) error {
 	// direct-PUT path — no GI variant pre-check, no submit/approval step.
 	if pf.registry != "" && pf.registry != config.GIName {
 		// Same recompile staleness guard as the GI path below — it is about the
-		// local build, not the target, so it applies identically here.
+		// local build, not the target, so it applies identically here. Reuse the
+		// package already staged by enforceLint above (checkForRecompile now
+		// inspects the built entries rather than rebuilding the zip).
 		if !ci {
-			checkForRecompile(m)
+			checkForRecompile(built)
 		}
 		// Note: the GI path's `--ci` → FGLPKG_TOKEN requirement intentionally does
 		// NOT apply here. Artifactory auth is per-registry (apikey/bearer/basic,
